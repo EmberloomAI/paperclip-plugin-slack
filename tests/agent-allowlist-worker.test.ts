@@ -433,6 +433,17 @@ describe("direct messages from allowed users (Emberloom fork 20/11)", () => {
     expect(ctx.agents.sessions.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("a DM from a user not on the list never reaches an agent already active in that DM thread", async () => {
+    const { ctx, store } = await setup(base);
+    const ts = "1700000000.002200";
+    store.set(STATE_KEYS.sessionRegistry("D-stefan", ts), [{
+      sessionId: "aktiv", agentId: EMBER, agentName: EMBER, agentDisplayName: "Ember", transport: "native",
+      status: "active", spawnedAt: new Date().toISOString(), lastActivityAt: new Date().toISOString(),
+    }]);
+    await dm("U-other", { thread_ts: ts }, "1700000000.002300");
+    expect(ctx.agents.sessions.sendMessage).not.toHaveBeenCalled();
+  });
+
   it("allowedUserIds does not open channels: a plain channel message from an allowed user starts nothing", async () => {
     const { ctx } = await setup(base);
     const body = { type: "event_callback", event: { type: "message", channel: "C-other", user: STEFAN, ts: "1700000000.002100", text: "hej" } };
