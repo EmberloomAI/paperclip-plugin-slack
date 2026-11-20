@@ -997,6 +997,10 @@ async function handleSlackEventsPayload(body: Record<string, unknown>): Promise<
 
   if (eventType === "message") {
     if (event.bot_id || (event.subtype && event.subtype !== "file_share")) return;
+    // Emberloom fork 20/11: Slack sends both app_mention and message for "@Ember ...". The app_mention path handles it,
+    // so the message copy is skipped; otherwise the agent got the same prompt twice.
+    const bot = String(((body.authorizations as Array<Record<string, unknown>> | undefined)?.[0]?.user_id) ?? "");
+    if (bot && String(event.text ?? "").includes(`<@${bot}>`)) return;
     await handleSlackThreadMessageEvent(companyId, event);
     return;
   }
@@ -2122,7 +2126,7 @@ const plugin = definePlugin({
     // =========================================================================
 
     // Native agent streaming output
-    ctx.events.on("plugin.slack.agent-stream-chunk", async (event: PluginEvent) => {
+    ctx.events.on(`plugin.${PLUGIN_ID}.slack.agent-stream-chunk`, async (event: PluginEvent) => {
       const rt = ensureRuntime(event.companyId);
       if (!rt) return;
       const p = event.payload as Record<string, unknown>;
@@ -2152,7 +2156,7 @@ const plugin = definePlugin({
     });
 
     // Escalation thread reply routing (from Slack Events API)
-    ctx.events.on("plugin.slack.thread_reply_escalation", async (event: PluginEvent) => {
+    ctx.events.on(`plugin.${PLUGIN_ID}.slack.thread_reply_escalation`, async (event: PluginEvent) => {
       if (!ensureRuntime(event.companyId)) return;
       const p = event.payload as Record<string, unknown>;
       const escalationId = String(p.escalationId ?? "");
@@ -2201,7 +2205,7 @@ const plugin = definePlugin({
     });
 
     // Thread message routing (multi-agent + custom commands + media)
-    ctx.events.on("plugin.slack.thread_message", async (event: PluginEvent) => {
+    ctx.events.on(`plugin.${PLUGIN_ID}.slack.thread_message`, async (event: PluginEvent) => {
       const rt = ensureRuntime(event.companyId);
       if (!rt) return;
       const p = event.payload as Record<string, unknown>;

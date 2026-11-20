@@ -231,14 +231,14 @@ describe("escalation reply to an agent session", () => {
   it("allowed: sends the human reply to the session", async () => {
     const { ctx, store, handlers } = await setup();
     seed(store);
-    await handlers.get("plugin.slack.thread_reply_escalation")(event);
+    await handlers.get("plugin.paperclip-plugin-slack.slack.thread_reply_escalation")(event);
     expect(ctx.agents.sessions.sendMessage).toHaveBeenCalledWith("sess-ember", COMPANY, expect.any(Object));
   });
 
   it.each(DENY_CASES)("%s: reply not sent", async (_l, config) => {
     const { ctx, store, handlers } = await setup(config);
     seed(store);
-    await handlers.get("plugin.slack.thread_reply_escalation")(event);
+    await handlers.get("plugin.paperclip-plugin-slack.slack.thread_reply_escalation")(event);
     expect(ctx.agents.sessions.sendMessage).not.toHaveBeenCalled();
   });
 });
@@ -367,6 +367,31 @@ describe("default agent on @mention (Emberloom fork)", () => {
       expect(ctx.agents.sessions.sendMessage).not.toHaveBeenCalled();
     },
   );
+
+  it("emits the agent's output with the bare event name and listens on the host-namespaced one", async () => {
+    const { ctx, handlers } = await setup(base);
+    ctx.agents.sessions.create.mockResolvedValue({ sessionId: "s-1" });
+    ctx.agents.sessions.sendMessage.mockImplementation(async (_id: string, _c: string, o: any) => {
+      o.onEvent({ eventType: "chunk", message: "Hej Stefan" });
+    });
+    await mention(OFFICE, "1700000000.001000");
+    const names = ctx.events.emit.mock.calls.map((c: any[]) => c[0]);
+    expect(names).toContain("slack.agent-stream-chunk");
+    expect(names.some((n: string) => n.startsWith("plugin."))).toBe(false);
+    expect(handlers.has("plugin.paperclip-plugin-slack.slack.agent-stream-chunk")).toBe(true);
+  });
+
+  it("the message copy of an @mention is skipped, so the agent gets the prompt once", async () => {
+    const { ctx } = await setup(base);
+    ctx.agents.sessions.create.mockResolvedValue({ sessionId: "s-1" });
+    const ts = "1700000000.001100";
+    const auth = [{ user_id: "UBOT" }];
+    const m1 = { type: "event_callback", authorizations: auth, event: { type: "app_mention", channel: OFFICE, ts, text: "<@UBOT> hej" } };
+    const m2 = { type: "event_callback", authorizations: auth, event: { type: "message", channel: OFFICE, ts, text: "<@UBOT> hej" } };
+    await signed("slack-events", JSON.stringify(m1), m1);
+    await signed("slack-events", JSON.stringify(m2), m2);
+    expect(ctx.agents.sessions.sendMessage).toHaveBeenCalledTimes(1);
+  });
 
   it("a plain message (message.groups) in an allowed channel never starts an agent", async () => {
     const { ctx } = await setup(base);

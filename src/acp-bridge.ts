@@ -264,8 +264,9 @@ export async function routeMessageToAgent(
       reason: `Slack message in ${channel}/${threadTs}`,
       onEvent: (event) => {
         if (event.eventType === "chunk" && event.message) {
-          // Streaming output handled via event listener
-          ctx.events.emit("plugin.slack.agent-stream-chunk", companyId, {
+          // Streaming output handled via event listener. Emberloom fork 20/11: the host namespaces plugin events as
+          // plugin.<pluginKey>.<name> and rejects names that already start with "plugin.", so emit the bare name.
+          ctx.events.emit("slack.agent-stream-chunk", companyId, {
             agentName: target.agentName,
             agentDisplayName: target.agentDisplayName,
             sessionId: target.sessionId,
