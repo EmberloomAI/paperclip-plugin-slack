@@ -293,6 +293,32 @@ describe("default agent on @mention (Emberloom fork)", () => {
     expect(ctx.agents.sessions.sendMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("creates the session with a taskKey the host's sessions.sendMessage can find (plugin:<id>:session:)", async () => {
+    const { ctx } = await setup(base);
+    ctx.agents.sessions.create.mockResolvedValue({ sessionId: "s-1" });
+    await mention(OFFICE);
+    const opts = ctx.agents.sessions.create.mock.calls[0][2];
+    expect(opts.taskKey.startsWith("plugin:paperclip-plugin-slack:session:")).toBe(true);
+  });
+
+  it("a stale session the host cannot find is closed and a fresh one is started in the same mention", async () => {
+    const { ctx, store } = await setup(base);
+    const ts = "1700000000.000900";
+    store.set(STATE_KEYS.sessionRegistry(OFFICE, ts), [{
+      sessionId: "gammal", agentId: EMBER, agentName: EMBER, agentDisplayName: "Ember", transport: "native",
+      status: "active", spawnedAt: new Date().toISOString(), lastActivityAt: new Date().toISOString(),
+    }]);
+    ctx.agents.sessions.sendMessage.mockImplementation(async (id: string) => {
+      if (id === "gammal") throw new Error("Session not found: gammal");
+    });
+    ctx.agents.sessions.create.mockResolvedValue({ sessionId: "ny" });
+    await mention(OFFICE, ts);
+    expect(ctx.agents.sessions.create).toHaveBeenCalledTimes(1);
+    expect(ctx.agents.sessions.sendMessage.mock.calls.map((c: any[]) => c[0])).toEqual(["gammal", "ny"]);
+    const reg = store.get(STATE_KEYS.sessionRegistry(OFFICE, ts)) as any[];
+    expect(reg.find((x) => x.sessionId === "gammal").status).toBe("closed");
+  });
+
   it("does not start a second session when the thread already has an active one", async () => {
     const { ctx } = await setup(base);
     ctx.agents.sessions.create.mockResolvedValue({ sessionId: "s-1" });

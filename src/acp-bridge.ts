@@ -103,7 +103,10 @@ export async function spawnAgent(
     return existing;
   }
 
-  const taskKey = `slack-${channelId}-${threadTs}`;
+  // Emberloom fork 20/11: Paperclip 2026.1106 finds a plugin session in sessions.sendMessage only when its taskKey starts
+  // with "plugin:<pluginKey>:session:" (plugin-host-services.js). Upstream's "slack-..." key made every message after a
+  // spawn fail with "Session not found".
+  const taskKey = `plugin:${PLUGIN_ID}:session:slack-${channelId}-${threadTs}`;
   let transport: "native" | "acp" = "acp";
   let sessionId = `acp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -255,6 +258,7 @@ export async function routeMessageToAgent(
 
   if (target.transport === "native") {
     // Use native session messaging - real SDK API
+    try {
     await ctx.agents.sessions.sendMessage(target.sessionId, companyId, {
       prompt: text,
       reason: `Slack message in ${channel}/${threadTs}`,
@@ -272,6 +276,16 @@ export async function routeMessageToAgent(
         }
       },
     });
+    } catch (err) {
+      // Emberloom fork 20/11: a session the host no longer finds (for example one created before the taskKey fix) is
+      // closed, so that the next @mention starts a fresh one instead of failing silently in the same thread.
+      if (!/Session not found/i.test(String((err as Error)?.message ?? err))) throw err;
+      ctx.logger.warn("Agent session not found; closing it in the thread registry", { sessionId: target.sessionId });
+      const all = await getSessions(ctx, companyId, channel, threadTs);
+      for (const s of all) if (s.sessionId === target.sessionId) s.status = "closed";
+      await setSessions(ctx, companyId, channel, threadTs, all);
+      return false;
+    }
   } else {
     // ACP fallback
     ctx.events.emit("acp-message", companyId, {
