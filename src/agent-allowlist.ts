@@ -30,6 +30,22 @@ export function isAllowedChannelId(id: unknown): boolean {
   return typeof id === "string" && allowedChannels.has(id);
 }
 
+/**
+ * Slack users who may start the default agent in a direct message (Stefan 20/11 via Lyra: Stefan, Emma, Adán).
+ * Fails closed like the other lists.
+ */
+let allowedUsers: ReadonlySet<string> = new Set();
+
+export function setAllowedUserIds(value: unknown): void {
+  const valid =
+    Array.isArray(value) && value.every((id) => typeof id === "string" && id.length > 0);
+  allowedUsers = new Set(valid ? (value as string[]) : []);
+}
+
+export function isAllowedUserId(id: unknown): boolean {
+  return typeof id === "string" && allowedUsers.has(id);
+}
+
 export function isAllowedAgentId(id: unknown): boolean {
   return typeof id === "string" && allowedIds.has(id);
 }

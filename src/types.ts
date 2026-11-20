@@ -26,6 +26,7 @@ export type SlackConfig = {
   allowedAgentIds: string[];
   defaultAgentId: string;
   allowedChannelIds: string[];
+  allowedUserIds: string[];
 };
 
 // --- Session registry types ---

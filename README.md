@@ -194,6 +194,7 @@ If the plugin looks broken, first confirm which Paperclip host it's actually tal
 | `allowedAgentIds` | Paperclip agent ids that Slack may start, message or invoke (spawn, routing, handoff, discussion, custom commands, watches, media). Names are resolved to ids within the company and must match exactly one agent. Empty, missing or malformed means no agent is allowed (default: `[]`) |
 | `defaultAgentId` | Agent started when the bot is @mentioned in an allowed channel and the thread has no active agent. Must also be in `allowedAgentIds`, else nothing starts (default: `""`) |
 | `allowedChannelIds` | Slack channel ids where an @mention may start `defaultAgentId`. Empty or missing means none (default: `[]`) |
+| `allowedUserIds` | Slack user ids whose direct messages to the bot start or reach `defaultAgentId`. Empty or missing means no direct messages (default: `[]`) |
 
 ## Agent tools
 

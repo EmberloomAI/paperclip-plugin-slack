@@ -41,7 +41,7 @@ import {
   formatEscalationResolved,
 } from "./formatters.js";
 import { processMediaFile, isMediaFile } from "./media-pipeline.js";
-import { isAllowedAgentId, isAllowedChannelId, resolveAllowedAgentId, setAllowedAgentIds, setAllowedChannelIds } from "./agent-allowlist.js";
+import { isAllowedAgentId, isAllowedChannelId, isAllowedUserId, resolveAllowedAgentId, setAllowedAgentIds, setAllowedChannelIds, setAllowedUserIds } from "./agent-allowlist.js";
 import { escalateToHumanTool } from "./manifest.js";
 import {
   registerCommand,
@@ -155,6 +155,7 @@ export function _resetRuntimeForTests(): void {
   pluginConfig = undefined as unknown as SlackConfig;
   setAllowedAgentIds([]);
   setAllowedChannelIds([]);
+  setAllowedUserIds([]);
   slackSigningSecret = null;
   runtimeHealth = {
     status: "degraded",
@@ -242,6 +243,7 @@ function claimOwnership(ctx: PluginContext, companyId: string, config: unknown):
     runtime = null;
     setAllowedAgentIds([]);
     setAllowedChannelIds([]);
+    setAllowedUserIds([]);
     ownerCompanyId = companyId;
     ownerConfigJson = configJson;
     refusedCompanies.delete(companyId);
@@ -408,6 +410,7 @@ async function bootstrapRuntime(
   pluginConfig = config;
   setAllowedAgentIds(config.allowedAgentIds);
   setAllowedChannelIds(config.allowedChannelIds);
+  setAllowedUserIds(config.allowedUserIds);
   slackSigningSecret = signingSecret;
 
   if (!signingSecret) {
@@ -1001,6 +1004,17 @@ async function handleSlackEventsPayload(body: Record<string, unknown>): Promise<
     // so the message copy is skipped; otherwise the agent got the same prompt twice.
     const bot = String(((body.authorizations as Array<Record<string, unknown>> | undefined)?.[0]?.user_id) ?? "");
     if (bot && String(event.text ?? "").includes(`<@${bot}>`)) return;
+    // Emberloom fork 20/11 (Stefan "a" via Lyra): a direct message from a user in allowedUserIds starts or reaches the
+    // default agent. Any other direct message is ignored. Channels keep the app_mention rule.
+    if (event.channel_type === "im") {
+      if (!isAllowedUserId(event.user)) {
+        pluginCtx.logger.info("Direct message from a user not in allowedUserIds ignored", {});
+        return;
+      }
+      const routed = await handleSlackThreadMessageEvent(companyId, event);
+      if (!routed) await startDefaultAgentOnMention(companyId, event, true);
+      return;
+    }
     await handleSlackThreadMessageEvent(companyId, event);
     return;
   }
@@ -1023,11 +1037,12 @@ async function handleSlackEventsPayload(body: Record<string, unknown>): Promise<
  * not resolving to an allowed agent, or spawnAgent refusing (maxAgentsPerThread,
  * agent already active).
  */
-async function startDefaultAgentOnMention(companyId: string, event: Record<string, unknown>): Promise<void> {
+async function startDefaultAgentOnMention(companyId: string, event: Record<string, unknown>, directMessage = false): Promise<void> {
   const channel = String(event.channel ?? "");
   const threadTs = String(event.thread_ts ?? event.ts ?? "");
   if (!channel || !threadTs) return;
-  if (!isAllowedChannelId(channel)) {
+  // A direct message is already checked against allowedUserIds by the caller; a channel must be in allowedChannelIds.
+  if (directMessage ? !isAllowedUserId(event.user) : !isAllowedChannelId(channel)) {
     pluginCtx.logger.warn("Mention in a channel not in allowedChannelIds; no agent started", { channel });
     return;
   }

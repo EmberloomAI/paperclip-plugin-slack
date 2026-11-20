@@ -401,3 +401,42 @@ describe("default agent on @mention (Emberloom fork)", () => {
     expect(posted(ctx)).toHaveLength(0);
   });
 });
+
+describe("direct messages from allowed users (Emberloom fork 20/11)", () => {
+  const STEFAN = "U0AU87LMNUC";
+  const base = { defaultAgentId: EMBER, allowedChannelIds: ["C-office"], allowedUserIds: [STEFAN], maxAgentsPerThread: 1 };
+  const dm = (user: string, extra: Record<string, unknown> = {}, ts = "1700000000.002000") => {
+    const body = { type: "event_callback", authorizations: [{ user_id: "UBOT" }],
+      event: { type: "message", channel_type: "im", channel: "D-stefan", user, ts, text: "hej", ...extra } };
+    return signed("slack-events", JSON.stringify(body), body);
+  };
+
+  it("a DM from an allowed user starts the default agent and routes the message once", async () => {
+    const { ctx } = await setup(base);
+    ctx.agents.sessions.create.mockResolvedValue({ sessionId: "s-dm" });
+    await dm(STEFAN);
+    expect(ctx.agents.sessions.create).toHaveBeenCalledTimes(1);
+    expect(ctx.agents.sessions.create.mock.calls[0][0]).toBe(EMBER);
+    expect(ctx.agents.sessions.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["user not on the list", base, "U-other", {}],
+    ["empty allowedUserIds", { ...base, allowedUserIds: [] }, STEFAN, {}],
+    ["missing allowedUserIds", { ...base, allowedUserIds: undefined }, STEFAN, {}],
+    ["bot message", base, STEFAN, { bot_id: "B1" }],
+    ["defaultAgentId not allowed", { ...base, defaultAgentId: STELLA }, STEFAN, {}],
+  ])("%s: no session, no message", async (_l, config, user, extra) => {
+    const { ctx } = await setup(config as Record<string, unknown>);
+    await dm(user as string, extra as Record<string, unknown>);
+    expect(ctx.agents.sessions.create).not.toHaveBeenCalled();
+    expect(ctx.agents.sessions.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("allowedUserIds does not open channels: a plain channel message from an allowed user starts nothing", async () => {
+    const { ctx } = await setup(base);
+    const body = { type: "event_callback", event: { type: "message", channel: "C-other", user: STEFAN, ts: "1700000000.002100", text: "hej" } };
+    await signed("slack-events", JSON.stringify(body), body);
+    expect(ctx.agents.sessions.create).not.toHaveBeenCalled();
+  });
+});

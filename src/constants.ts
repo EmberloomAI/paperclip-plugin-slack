@@ -62,4 +62,5 @@ export const DEFAULT_CONFIG = {
   allowedAgentIds: [] as string[],
   defaultAgentId: "",
   allowedChannelIds: [] as string[],
+  allowedUserIds: [] as string[],
 } as const;
