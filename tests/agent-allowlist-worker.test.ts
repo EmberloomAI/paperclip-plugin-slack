@@ -134,7 +134,7 @@ describe("escalate_to_human channel", () => {
     const { ctx } = await setup();
     await tool(ctx, "escalate_to_human")(
       { reason: "help", channelId: "C-evil", channel: "C-evil", chatId: "C-evil" },
-      { companyId: COMPANY },
+      { companyId: COMPANY, agentId: EMBER },
     );
     const posts = ctx.http.fetch.mock.calls.filter((c: any[]) => String(c[0]).endsWith("chat.postMessage"));
     expect(posts).toHaveLength(1);
@@ -146,10 +146,32 @@ describe("escalate_to_human channel", () => {
 
   it("falls back to defaultChannelId, not the approvals channel", async () => {
     const { ctx } = await setup({ escalationChatId: "", approvalsChannelId: "C-approvals" });
-    await tool(ctx, "escalate_to_human")({ reason: "help", channelId: "C-evil" }, { companyId: COMPANY });
+    await tool(ctx, "escalate_to_human")({ reason: "help", channelId: "C-evil" }, { companyId: COMPANY, agentId: EMBER });
     const post = ctx.http.fetch.mock.calls.find((c: any[]) => String(c[0]).endsWith("chat.postMessage"));
     expect(JSON.parse(post[1].body).channel).toBe("C-default");
   });
+});
+
+describe("escalate_to_human caller", () => {
+  it("allowed agent posts, and the name shown comes from its id, not the parameters", async () => {
+    const { ctx } = await setup();
+    const r = await tool(ctx, "escalate_to_human")({ reason: "help", agentName: "Someone Else" }, { companyId: COMPANY, agentId: EMBER });
+    expect(r.error).toBeUndefined();
+    const post = ctx.http.fetch.mock.calls.find((c: any[]) => String(c[0]).endsWith("chat.postMessage"));
+    expect(post).toBeDefined();
+    expect(post[1].body).not.toContain("Someone Else");
+  });
+
+  it.each([["agent not on the list", {}, STELLA], ["empty allowlist", { allowedAgentIds: [] }, EMBER], ["missing agentId", {}, undefined]])(
+    "%s: error, nothing posted or stored",
+    async (_l, config, agentId) => {
+      const { ctx } = await setup(config as Record<string, unknown>);
+      const r = await tool(ctx, "escalate_to_human")({ reason: "help", agentName: "Ember" }, { companyId: COMPANY, agentId });
+      expect(r.error).toMatch(/not allowed/);
+      expect(ctx.http.fetch).not.toHaveBeenCalled();
+      expect(ctx.state.set).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("handoff_to_agent tool", () => {

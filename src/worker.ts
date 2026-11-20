@@ -1325,13 +1325,26 @@ const plugin = definePlugin({
         const companyId = runCtx.companyId;
         const rt = ensureRuntime(companyId);
         if (!rt) return { error: "Slack plugin is not configured yet" };
+        // Only allowed agents may post, and the name shown is looked up from the caller's id,
+        // never taken from the parameters.
+        if (!isAllowedAgentId(runCtx.agentId)) {
+          ctx.logger.warn("escalate_to_human denied for agent not in allowedAgentIds", { agentId: runCtx.agentId });
+          return { error: "This agent is not allowed to post to Slack" };
+        }
+        let callerName: string | undefined;
+        try {
+          const agents = await ctx.agents.list({ companyId, limit: 100, offset: 0 });
+          callerName = agents.find((a) => a.id === runCtx.agentId)?.name;
+        } catch {
+          callerName = undefined;
+        }
         const escalationId = genId("esc");
 
         const record: EscalationRecord = {
           id: escalationId,
           reason: String(p.reason ?? ""),
           confidence: p.confidence != null ? Number(p.confidence) : undefined,
-          agentName: p.agentName != null ? String(p.agentName) : undefined,
+          agentName: callerName,
           conversationHistory: p.conversationHistory as Array<{ role: string; text: string }> | undefined,
           agentReasoning: p.agentReasoning != null ? String(p.agentReasoning) : undefined,
           suggestedReply: p.suggestedReply != null ? String(p.suggestedReply) : undefined,

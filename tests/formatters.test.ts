@@ -75,21 +75,18 @@ describe("formatIssueDone", () => {
 });
 
 describe("formatApprovalCreated", () => {
-  it("includes approve and reject buttons", () => {
+  it("has only a View link, no approve or reject buttons (Emberloom fork)", () => {
     const msg = formatApprovalCreated(mockEvent({
       type: "deploy",
       approvalId: "apr-1",
       issueIds: ["ISS-1"],
     }));
     const actionsBlock = msg.blocks?.find((b: Record<string, unknown>) => b.type === "actions");
-    expect(actionsBlock).toBeDefined();
     const elements = (actionsBlock as Record<string, unknown>).elements as Array<Record<string, unknown>>;
-    expect(elements.length).toBe(3);
-    expect(elements[0].action_id).toBe("approval_approve");
-    expect(elements[0].style).toBe("primary");
-    expect(elements[1].action_id).toBe("approval_reject");
-    expect(elements[1].style).toBe("danger");
-    expect(elements[2].url).toContain("/approvals/apr-1");
+    expect(elements.length).toBe(1);
+    expect(elements[0].action_id).toBe("approval_view");
+    expect(elements[0].url).toContain("/approvals/apr-1");
+    expect(JSON.stringify(msg)).not.toMatch(/approval_approve|approval_reject/);
   });
 
   it("shows issue count in fallback text", () => {

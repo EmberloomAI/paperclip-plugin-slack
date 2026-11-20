@@ -176,20 +176,6 @@ export function formatApprovalCreated(event: PluginEvent): SlackMessage {
     elements: [
       {
         type: "button",
-        text: { type: "plain_text", text: "Approve" },
-        style: "primary",
-        action_id: "approval_approve",
-        value: approvalId,
-      },
-      {
-        type: "button",
-        text: { type: "plain_text", text: "Reject" },
-        style: "danger",
-        action_id: "approval_reject",
-        value: approvalId,
-      },
-      {
-        type: "button",
         text: { type: "plain_text", text: "View" },
         url: `${dashboardBase}/approvals/${approvalId}`,
         action_id: "approval_view",

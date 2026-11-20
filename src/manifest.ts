@@ -21,7 +21,6 @@ export const escalateToHumanTool: PluginToolDeclaration = {
     properties: {
       reason: { type: "string", description: "Why the agent is escalating" },
       confidence: { type: "number", description: "Agent confidence score (0-1)" },
-      agentName: { type: "string", description: "Name of the escalating agent" },
       conversationHistory: {
         type: "array",
         items: {
