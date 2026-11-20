@@ -220,6 +220,20 @@ const manifest: PaperclipPluginManifestV1 = {
           "Paperclip agent ids that Slack may start or message. Empty means no agent is allowed.",
         default: DEFAULT_CONFIG.allowedAgentIds,
       },
+      defaultAgentId: {
+        type: "string",
+        title: "Default Agent ID",
+        description:
+          "Agent started when the bot is @mentioned in an allowed channel and the thread has no active agent. Must also be in allowedAgentIds.",
+        default: DEFAULT_CONFIG.defaultAgentId,
+      },
+      allowedChannelIds: {
+        type: "array",
+        items: { type: "string" },
+        title: "Allowed Channel IDs",
+        description: "Slack channels where an @mention may start the default agent. Empty means none.",
+        default: DEFAULT_CONFIG.allowedChannelIds,
+      },
     },
     required: ["slackTokenRef", "slackSigningSecretRef", "defaultChannelId"],
   },

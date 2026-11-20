@@ -274,3 +274,67 @@ describe("approvals are not decided from Slack", () => {
     expect(JSON.stringify(ctx.http.fetch.mock.calls)).not.toContain("/clip approve");
   });
 });
+
+describe("default agent on @mention (Emberloom fork)", () => {
+  const OFFICE = "C-office";
+  const base = { defaultAgentId: EMBER, allowedChannelIds: [OFFICE], maxAgentsPerThread: 1 };
+  const mention = (channel: string, ts = "1700000000.000500") => {
+    const body = { type: "event_callback", event: { type: "app_mention", channel, ts, text: "<@B> hej" } };
+    return signed("slack-events", JSON.stringify(body), body);
+  };
+  const posted = (ctx: any) => calledUrls(ctx).filter((u) => u.endsWith("chat.postMessage"));
+
+  it("mention in an allowed channel starts the default agent and routes the message", async () => {
+    const { ctx } = await setup(base);
+    ctx.agents.sessions.create.mockResolvedValue({ sessionId: "s-1" });
+    await mention(OFFICE);
+    expect(ctx.agents.sessions.create).toHaveBeenCalledTimes(1);
+    expect(ctx.agents.sessions.create.mock.calls[0][0]).toBe(EMBER);
+    expect(ctx.agents.sessions.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not start a second session when the thread already has an active one", async () => {
+    const { ctx } = await setup(base);
+    ctx.agents.sessions.create.mockResolvedValue({ sessionId: "s-1" });
+    await mention(OFFICE);
+    await mention(OFFICE);
+    expect(ctx.agents.sessions.create).toHaveBeenCalledTimes(1);
+    expect(ctx.agents.sessions.sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not start the default agent when another agent is active in the thread, even with a higher maxAgentsPerThread", async () => {
+    const { ctx, store } = await setup({ ...base, maxAgentsPerThread: 5 });
+    const ts = "1700000000.000700";
+    store.set(STATE_KEYS.sessionRegistry(OFFICE, ts), [{
+      sessionId: "old", agentId: STELLA, agentName: "Stella", agentDisplayName: "Stella", transport: "native",
+      status: "active", spawnedAt: new Date().toISOString(), lastActivityAt: new Date().toISOString(),
+    }]);
+    await mention(OFFICE, ts);
+    expect(ctx.agents.sessions.create).not.toHaveBeenCalled();
+    expect(ctx.agents.sessions.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["mention in another channel", base, "C-other"],
+    ["defaultAgentId not in allowedAgentIds", { ...base, defaultAgentId: STELLA }, OFFICE],
+    ["empty allowedChannelIds", { ...base, allowedChannelIds: [] }, OFFICE],
+    ["missing allowedChannelIds", { ...base, allowedChannelIds: undefined }, OFFICE],
+    ["empty allowedAgentIds", { ...base, allowedAgentIds: [] }, OFFICE],
+    ["empty defaultAgentId", { ...base, defaultAgentId: "" }, OFFICE],
+  ])("%s: no session, no message, no reply", async (_l, config, channel) => {
+    const { ctx } = await setup(config as Record<string, unknown>);
+    await mention(channel as string);
+    expect(ctx.agents.sessions.create).not.toHaveBeenCalled();
+    expect(ctx.agents.sessions.sendMessage).not.toHaveBeenCalled();
+    expect(ctx.events.emit).not.toHaveBeenCalledWith("acp-spawn", expect.anything(), expect.anything());
+    expect(posted(ctx)).toHaveLength(0);
+  });
+
+  it("a plain message (message.groups) in an allowed channel never starts an agent", async () => {
+    const { ctx } = await setup(base);
+    const body = { type: "event_callback", event: { type: "message", channel: OFFICE, ts: "1700000000.000600", text: "hej" } };
+    await signed("slack-events", JSON.stringify(body), body);
+    expect(ctx.agents.sessions.create).not.toHaveBeenCalled();
+    expect(posted(ctx)).toHaveLength(0);
+  });
+});

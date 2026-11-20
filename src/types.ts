@@ -24,6 +24,8 @@ export type SlackConfig = {
   paperclipBaseUrl: string;
   maxAgentsPerThread: number;
   allowedAgentIds: string[];
+  defaultAgentId: string;
+  allowedChannelIds: string[];
 };
 
 // --- Session registry types ---

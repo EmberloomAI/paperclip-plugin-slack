@@ -59,6 +59,17 @@ async function touchSession(
   }
 }
 
+/** True when the thread already has an active agent session (Emberloom fork, default agent on mention). */
+export async function hasActiveSession(
+  ctx: PluginContext,
+  companyId: string,
+  channelId: string,
+  threadTs: string,
+): Promise<boolean> {
+  const sessions = await getSessions(ctx, companyId, channelId, threadTs);
+  return sessions.some((s) => s.status === "active");
+}
+
 // --- Spawn agent: native sessions first, ACP fallback ---
 
 export async function spawnAgent(

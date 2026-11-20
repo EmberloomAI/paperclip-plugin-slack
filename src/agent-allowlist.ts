@@ -14,6 +14,22 @@ export function setAllowedAgentIds(value: unknown): void {
   allowedIds = new Set(valid ? (value as string[]) : []);
 }
 
+/**
+ * Slack channels where an @mention may start the default agent. Fails closed like
+ * the agent list: missing, empty or malformed means no channel.
+ */
+let allowedChannels: ReadonlySet<string> = new Set();
+
+export function setAllowedChannelIds(value: unknown): void {
+  const valid =
+    Array.isArray(value) && value.every((id) => typeof id === "string" && id.length > 0);
+  allowedChannels = new Set(valid ? (value as string[]) : []);
+}
+
+export function isAllowedChannelId(id: unknown): boolean {
+  return typeof id === "string" && allowedChannels.has(id);
+}
+
 export function isAllowedAgentId(id: unknown): boolean {
   return typeof id === "string" && allowedIds.has(id);
 }

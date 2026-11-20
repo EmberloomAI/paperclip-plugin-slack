@@ -17,6 +17,7 @@ import { SlackSocketModeClient } from "./socket-mode.js";
 import { createSocketModeHandlers, dispatchSlackWebhook } from "./slack-transport.js";
 import {
   spawnAgent,
+  hasActiveSession,
   closeAgent,
   routeMessageToAgent,
   handleAgentOutput,
@@ -40,7 +41,7 @@ import {
   formatEscalationResolved,
 } from "./formatters.js";
 import { processMediaFile, isMediaFile } from "./media-pipeline.js";
-import { isAllowedAgentId, resolveAllowedAgentId, setAllowedAgentIds } from "./agent-allowlist.js";
+import { isAllowedAgentId, isAllowedChannelId, resolveAllowedAgentId, setAllowedAgentIds, setAllowedChannelIds } from "./agent-allowlist.js";
 import { escalateToHumanTool } from "./manifest.js";
 import {
   registerCommand,
@@ -153,6 +154,7 @@ export function _resetRuntimeForTests(): void {
   pluginToken = undefined as unknown as string;
   pluginConfig = undefined as unknown as SlackConfig;
   setAllowedAgentIds([]);
+  setAllowedChannelIds([]);
   slackSigningSecret = null;
   runtimeHealth = {
     status: "degraded",
@@ -239,6 +241,7 @@ function claimOwnership(ctx: PluginContext, companyId: string, config: unknown):
     // ensureRuntime() during the bootstrap window would otherwise still serve it.
     runtime = null;
     setAllowedAgentIds([]);
+    setAllowedChannelIds([]);
     ownerCompanyId = companyId;
     ownerConfigJson = configJson;
     refusedCompanies.delete(companyId);
@@ -404,6 +407,7 @@ async function bootstrapRuntime(
   pluginToken = token;
   pluginConfig = config;
   setAllowedAgentIds(config.allowedAgentIds);
+  setAllowedChannelIds(config.allowedChannelIds);
   slackSigningSecret = signingSecret;
 
   if (!signingSecret) {
@@ -999,16 +1003,44 @@ async function handleSlackEventsPayload(body: Record<string, unknown>): Promise<
 
   if (eventType === "app_mention") {
     const routed = await handleSlackThreadMessageEvent(companyId, event);
-    if (!routed) {
-      const channel = String(event.channel ?? "");
-      const threadTs = String(event.thread_ts ?? event.ts ?? "");
-      if (channel && threadTs) {
-        await postMessage(pluginCtx, pluginToken, channel, {
-          text: "No active Paperclip agents are attached to this thread. Use `/clip acp spawn <agent>` first.",
-        }, { threadTs });
-      }
-    }
+    if (!routed) await startDefaultAgentOnMention(companyId, event);
   }
+}
+
+/**
+ * Emberloom fork: an @mention in an allowed channel, in a thread with no active
+ * agent, starts the configured default agent and routes the message to it.
+ * Fails closed with no reply: channel not in allowedChannelIds, defaultAgentId
+ * not resolving to an allowed agent, or spawnAgent refusing (maxAgentsPerThread,
+ * agent already active).
+ */
+async function startDefaultAgentOnMention(companyId: string, event: Record<string, unknown>): Promise<void> {
+  const channel = String(event.channel ?? "");
+  const threadTs = String(event.thread_ts ?? event.ts ?? "");
+  if (!channel || !threadTs) return;
+  if (!isAllowedChannelId(channel)) {
+    pluginCtx.logger.warn("Mention in a channel not in allowedChannelIds; no agent started", { channel });
+    return;
+  }
+  if (await hasActiveSession(pluginCtx, companyId, channel, threadTs)) {
+    pluginCtx.logger.warn("Thread already has an active agent; no default agent started", { channel, threadTs });
+    return;
+  }
+  const agentId = await resolveAllowedAgentId(pluginCtx, companyId, pluginConfig?.defaultAgentId);
+  if (!agentId) return;
+  let displayName = agentId;
+  try {
+    const agents = await pluginCtx.agents.list({ companyId, limit: 100, offset: 0 });
+    displayName = agents.find((a) => a.id === agentId)?.name ?? agentId;
+  } catch {
+    // keep the id as the display name
+  }
+  const entry = await spawnAgent(
+    pluginCtx, companyId, channel, threadTs, agentId, displayName,
+    `Mentioned in Slack ${channel}/${threadTs}`, pluginConfig?.maxAgentsPerThread,
+  );
+  if (!entry) return;
+  await handleSlackThreadMessageEvent(companyId, event);
 }
 
 async function handleSlackThreadMessageEvent(

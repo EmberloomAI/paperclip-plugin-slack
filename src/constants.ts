@@ -60,4 +60,6 @@ export const DEFAULT_CONFIG = {
   paperclipBaseUrl: "http://localhost:3100",
   maxAgentsPerThread: 5,
   allowedAgentIds: [] as string[],
+  defaultAgentId: "",
+  allowedChannelIds: [] as string[],
 } as const;
