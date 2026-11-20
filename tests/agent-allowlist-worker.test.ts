@@ -330,6 +330,18 @@ describe("default agent on @mention (Emberloom fork)", () => {
     expect(posted(ctx)).toHaveLength(0);
   });
 
+  it.each([["bot_id", { bot_id: "B123" }], ["subtype", { subtype: "message_changed" }]])(
+    "mention with %s never starts or routes an agent",
+    async (_l, extra) => {
+      const { ctx } = await setup(base);
+      ctx.agents.sessions.create.mockResolvedValue({ sessionId: "s-1" });
+      const body = { type: "event_callback", event: { type: "app_mention", channel: OFFICE, ts: "1700000000.000800", text: "<@B> hej", ...extra } };
+      await signed("slack-events", JSON.stringify(body), body);
+      expect(ctx.agents.sessions.create).not.toHaveBeenCalled();
+      expect(ctx.agents.sessions.sendMessage).not.toHaveBeenCalled();
+    },
+  );
+
   it("a plain message (message.groups) in an allowed channel never starts an agent", async () => {
     const { ctx } = await setup(base);
     const body = { type: "event_callback", event: { type: "message", channel: OFFICE, ts: "1700000000.000600", text: "hej" } };

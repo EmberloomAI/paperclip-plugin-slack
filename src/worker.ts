@@ -1002,6 +1002,8 @@ async function handleSlackEventsPayload(body: Record<string, unknown>): Promise<
   }
 
   if (eventType === "app_mention") {
+    // Same filter as plain messages: bots (including this app) and edited or system subtypes never route or start an agent.
+    if (event.bot_id || event.subtype) return;
     const routed = await handleSlackThreadMessageEvent(companyId, event);
     if (!routed) await startDefaultAgentOnMention(companyId, event);
   }
