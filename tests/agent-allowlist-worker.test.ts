@@ -372,11 +372,15 @@ describe("default agent on @mention (Emberloom fork)", () => {
     const { ctx, handlers } = await setup(base);
     ctx.agents.sessions.create.mockResolvedValue({ sessionId: "s-1" });
     ctx.agents.sessions.sendMessage.mockImplementation(async (_id: string, _c: string, o: any) => {
-      o.onEvent({ eventType: "chunk", message: "Hej Stefan" });
+      o.onEvent({ eventType: "chunk", stream: "system", message: "startup reuse: provider_process (fresh)" });
+      o.onEvent({ eventType: "status", stream: "system", message: "Run status: running" });
+      o.onEvent({ eventType: "done", stream: "system", message: "Hej Stefan" });
     });
     await mention(OFFICE, "1700000000.001000");
     const names = ctx.events.emit.mock.calls.map((c: any[]) => c[0]);
     expect(names).toContain("slack.agent-stream-chunk");
+    const texter = ctx.events.emit.mock.calls.filter((c: any[]) => c[0] === "slack.agent-stream-chunk").map((c: any[]) => c[2].text);
+    expect(texter).toEqual(["Hej Stefan"]);
     expect(names.some((n: string) => n.startsWith("plugin."))).toBe(false);
     expect(handlers.has("plugin.paperclip-plugin-slack.slack.agent-stream-chunk")).toBe(true);
   });

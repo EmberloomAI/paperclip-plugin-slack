@@ -263,7 +263,10 @@ export async function routeMessageToAgent(
       prompt: text,
       reason: `Slack message in ${channel}/${threadTs}`,
       onEvent: (event) => {
-        if (event.eventType === "chunk" && event.message) {
+        // Emberloom fork 20/11: on Paperclip 2026.1106 "chunk" events are the run's log and status lines (for example
+        // "startup reuse: provider_process (fresh)"), not the assistant's text. Only the terminal "done" event carries the
+        // answer (finalText), so only that goes to Slack.
+        if (event.eventType === "done" && event.message) {
           // Streaming output handled via event listener. Emberloom fork 20/11: the host namespaces plugin events as
           // plugin.<pluginKey>.<name> and rejects names that already start with "plugin.", so emit the bare name.
           ctx.events.emit("slack.agent-stream-chunk", companyId, {
