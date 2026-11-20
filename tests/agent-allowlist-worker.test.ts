@@ -444,6 +444,13 @@ describe("direct messages from allowed users (Emberloom fork 20/11)", () => {
     expect(ctx.agents.sessions.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("a DM that mentions the bot (\"@Ember ...\") still reaches the agent, since DMs get no app_mention", async () => {
+    const { ctx } = await setup(base);
+    ctx.agents.sessions.create.mockResolvedValue({ sessionId: "s-dm2" });
+    await dm(STEFAN, { text: "<@UBOT> hej" }, "1700000000.002400");
+    expect(ctx.agents.sessions.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("allowedUserIds does not open channels: a plain channel message from an allowed user starts nothing", async () => {
     const { ctx } = await setup(base);
     const body = { type: "event_callback", event: { type: "message", channel: "C-other", user: STEFAN, ts: "1700000000.002100", text: "hej" } };

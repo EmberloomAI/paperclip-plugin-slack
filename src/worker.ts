@@ -1000,10 +1000,6 @@ async function handleSlackEventsPayload(body: Record<string, unknown>): Promise<
 
   if (eventType === "message") {
     if (event.bot_id || (event.subtype && event.subtype !== "file_share")) return;
-    // Emberloom fork 20/11: Slack sends both app_mention and message for "@Ember ...". The app_mention path handles it,
-    // so the message copy is skipped; otherwise the agent got the same prompt twice.
-    const bot = String(((body.authorizations as Array<Record<string, unknown>> | undefined)?.[0]?.user_id) ?? "");
-    if (bot && String(event.text ?? "").includes(`<@${bot}>`)) return;
     // Emberloom fork 20/11 (Stefan "a" via Lyra): a direct message from a user in allowedUserIds starts or reaches the
     // default agent. Any other direct message is ignored. Channels keep the app_mention rule.
     if (event.channel_type === "im") {
@@ -1015,6 +1011,10 @@ async function handleSlackEventsPayload(body: Record<string, unknown>): Promise<
       if (!routed) await startDefaultAgentOnMention(companyId, event, true);
       return;
     }
+    // Emberloom fork 20/11 (after the im branch, Tyra LOW: a DM gets no app_mention): In channels Slack sends both app_mention and message for "@Ember ...". The app_mention path handles it,
+    // so the message copy is skipped; otherwise the agent got the same prompt twice.
+    const bot = String(((body.authorizations as Array<Record<string, unknown>> | undefined)?.[0]?.user_id) ?? "");
+    if (bot && String(event.text ?? "").includes(`<@${bot}>`)) return;
     await handleSlackThreadMessageEvent(companyId, event);
     return;
   }
