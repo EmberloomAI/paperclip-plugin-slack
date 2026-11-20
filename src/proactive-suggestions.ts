@@ -2,6 +2,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { WatchEntry } from "./types.js";
 import { postMessage } from "./slack-api.js";
 import { STATE_KEYS } from "./constants.js";
+import { requireAllowedAgentId } from "./agent-allowlist.js";
 
 // --- Watch registry ---
 
@@ -125,7 +126,8 @@ export async function checkWatches(
 
       try {
         // Invoke the configured agent
-        const result = await ctx.agents.invoke(watch.agentId, companyId, {
+        const agentId = await requireAllowedAgentId(ctx, companyId, watch.agentId);
+        const result = await ctx.agents.invoke(agentId, companyId, {
           prompt,
           reason: `Proactive watch trigger: ${watch.eventPattern}`,
         });

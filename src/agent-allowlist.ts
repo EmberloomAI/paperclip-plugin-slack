@@ -1,0 +1,67 @@
+import type { PluginContext } from "@paperclipai/plugin-sdk";
+
+/**
+ * Agents that Slack may start or message, by Paperclip agent id.
+ *
+ * Fails closed: until a valid `allowedAgentIds` list is configured, no agent is
+ * allowed. A missing, empty or malformed value never means "all agents".
+ */
+let allowedIds: ReadonlySet<string> = new Set();
+
+export function setAllowedAgentIds(value: unknown): void {
+  const valid =
+    Array.isArray(value) && value.every((id) => typeof id === "string" && id.length > 0);
+  allowedIds = new Set(valid ? (value as string[]) : []);
+}
+
+export function isAllowedAgentId(id: unknown): boolean {
+  return typeof id === "string" && allowedIds.has(id);
+}
+
+/**
+ * Resolve an agent name or id to an allowed agent id in `companyId`.
+ * Requires exactly one agent in the company whose id equals `nameOrId` or whose
+ * name equals it case-insensitively. Returns null when there is no match, more
+ * than one match, or the matched id is not in the allowlist.
+ */
+export async function resolveAllowedAgentId(
+  ctx: PluginContext,
+  companyId: string,
+  nameOrId: unknown,
+): Promise<string | null> {
+  if (allowedIds.size === 0 || typeof nameOrId !== "string" || !nameOrId || !companyId) {
+    ctx.logger.warn("Agent not allowed from Slack", { agent: nameOrId, reason: "empty" });
+    return null;
+  }
+
+  let agents: Array<{ id: string; name?: string; companyId?: string }>;
+  try {
+    agents = await ctx.agents.list({ companyId, limit: 100, offset: 0 });
+  } catch (err) {
+    ctx.logger.warn("Agent not allowed from Slack", { agent: nameOrId, reason: "list failed", err });
+    return null;
+  }
+
+  const wanted = nameOrId.toLowerCase();
+  const matches = agents.filter(
+    (a) =>
+      (!a.companyId || a.companyId === companyId) &&
+      (a.id === nameOrId || (typeof a.name === "string" && a.name.toLowerCase() === wanted)),
+  );
+  if (matches.length !== 1 || !isAllowedAgentId(matches[0].id)) {
+    ctx.logger.warn("Agent not allowed from Slack", { agent: nameOrId, matches: matches.length });
+    return null;
+  }
+  return matches[0].id;
+}
+
+/** Like resolveAllowedAgentId, but throws when the agent is not allowed. */
+export async function requireAllowedAgentId(
+  ctx: PluginContext,
+  companyId: string,
+  nameOrId: unknown,
+): Promise<string> {
+  const id = await resolveAllowedAgentId(ctx, companyId, nameOrId);
+  if (!id) throw new Error(`Agent ${String(nameOrId)} is not allowed from Slack`);
+  return id;
+}

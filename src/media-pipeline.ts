@@ -1,5 +1,6 @@
 import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { getFileInfo, downloadFile, postMessage } from "./slack-api.js";
+import { requireAllowedAgentId } from "./agent-allowlist.js";
 
 const AUDIO_MIMETYPES = new Set([
   "audio/mpeg",
@@ -83,7 +84,8 @@ export async function processMediaFile(
   // Step 3: Transcribe audio via Whisper (using agent invoke for transcription)
   if (isAudioFile(fileInfo.mimetype)) {
     try {
-      const transcriptionResult = await ctx.agents.invoke("whisper-transcriber", companyId, {
+      const whisperId = await requireAllowedAgentId(ctx, companyId, "whisper-transcriber");
+      const transcriptionResult = await ctx.agents.invoke(whisperId, companyId, {
         prompt: `Transcribe this audio file: ${fileInfo.name}`,
         reason: `Media pipeline: transcribe ${fileInfo.name} from Slack ${channelId}/${threadTs}`,
       });
@@ -104,7 +106,8 @@ export async function processMediaFile(
   // Step 4: If brief agent is configured, invoke it with transcription
   if (briefAgentId && result.transcription) {
     try {
-      const briefResult = await ctx.agents.invoke(briefAgentId, companyId, {
+      const briefId = await requireAllowedAgentId(ctx, companyId, briefAgentId);
+      const briefResult = await ctx.agents.invoke(briefId, companyId, {
         prompt: `Summarize this transcription from Slack:\n\n${result.transcription}`,
         reason: `Media pipeline: brief for ${fileInfo.name}`,
       });

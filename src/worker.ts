@@ -31,7 +31,6 @@ import {
   formatIssueCreated,
   formatIssueDone,
   formatApprovalCreated,
-  formatApprovalResolved,
   formatAgentError,
   formatAgentConnected,
   formatBudgetThreshold,
@@ -41,6 +40,8 @@ import {
   formatEscalationResolved,
 } from "./formatters.js";
 import { processMediaFile, isMediaFile } from "./media-pipeline.js";
+import { isAllowedAgentId, resolveAllowedAgentId, setAllowedAgentIds } from "./agent-allowlist.js";
+import { escalateToHumanTool } from "./manifest.js";
 import {
   registerCommand,
   handleCommandsSlash,
@@ -151,6 +152,7 @@ export function _resetRuntimeForTests(): void {
   refusedCompanies.clear();
   pluginToken = undefined as unknown as string;
   pluginConfig = undefined as unknown as SlackConfig;
+  setAllowedAgentIds([]);
   slackSigningSecret = null;
   runtimeHealth = {
     status: "degraded",
@@ -236,6 +238,7 @@ function claimOwnership(ctx: PluginContext, companyId: string, config: unknown):
     // company that no longer owns the install is worse than none: a no-arg
     // ensureRuntime() during the bootstrap window would otherwise still serve it.
     runtime = null;
+    setAllowedAgentIds([]);
     ownerCompanyId = companyId;
     ownerConfigJson = configJson;
     refusedCompanies.delete(companyId);
@@ -400,6 +403,7 @@ async function bootstrapRuntime(
   if (config.paperclipBaseUrl) setBaseUrl(config.paperclipBaseUrl);
   pluginToken = token;
   pluginConfig = config;
+  setAllowedAgentIds(config.allowedAgentIds);
   slackSigningSecret = signingSecret;
 
   if (!signingSecret) {
@@ -561,9 +565,6 @@ async function handleSlashCommand(ctx: PluginContext, rawBody: string, companyId
       case "issues":
         await handleIssuesCommand(ctx, companyId, responseUrl, arg);
         break;
-      case "approve":
-        await handleApproveCommand(ctx, responseUrl, arg);
-        break;
       case "acp": {
         const acpText = parts.slice(1).join(" ");
         await handleAcpSlashCommand(ctx, pluginToken, {
@@ -571,6 +572,7 @@ async function handleSlashCommand(ctx: PluginContext, rawBody: string, companyId
           threadTs,
           text: acpText,
           companyId,
+          maxAgentsPerThread: pluginConfig.maxAgentsPerThread,
         });
         break;
       }
@@ -680,7 +682,6 @@ async function handleHelpCommand(ctx: PluginContext, responseUrl: string): Promi
             "`/clip status` - Show active agents and recent completions",
             "`/clip agents` - List all agents with status badges",
             "`/clip issues [open|done]` - List issues filtered by status",
-            "`/clip approve <id>` - Approve a pending approval",
             "`/clip acp spawn <agent> [display]` - Add an agent to this thread",
             "`/clip acp status` - Show all agents in this thread",
             "`/clip acp close [name]` - Close a specific agent (or most recent)",
@@ -752,29 +753,6 @@ async function handleIssuesCommand(ctx: PluginContext, companyId: string, respon
       },
     ],
   });
-}
-
-async function handleApproveCommand(ctx: PluginContext, responseUrl: string, approvalId: string): Promise<void> {
-  if (!approvalId) {
-    await respondEphemeral(ctx, responseUrl, { text: "Usage: `/clip approve <approval-id>`" });
-    return;
-  }
-
-  try {
-    await ctx.http.fetch(
-      `${pluginConfig.paperclipBaseUrl}/api/approvals/${approvalId}/approve`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decidedByUserId: "slack:command" }),
-      },
-    );
-    await respondEphemeral(ctx, responseUrl, { text: `:white_check_mark: Approval \`${approvalId}\` approved.` });
-    await ctx.metrics.write("slack.approvals.decided", 1, { decision: "approve" });
-  } catch (err) {
-    ctx.logger.warn("Approve command failed", { approvalId, err });
-    await respondEphemeral(ctx, responseUrl, { text: `:x: Failed to approve \`${approvalId}\`. Check the ID and try again.` });
-  }
 }
 
 // --- Shared Slack inbound handlers (webhooks + Socket Mode) ---
@@ -1212,28 +1190,8 @@ async function handleInteractivityPayload(payload: Record<string, unknown>): Pro
 
 
   if (actionId === "approval_approve" || actionId === "approval_reject") {
-    const approved = actionId === "approval_approve";
-    const endpoint = approved ? "approve" : "reject";
-    try {
-      await pluginCtx.http.fetch(
-        `${pluginConfig.paperclipBaseUrl}/api/approvals/${actionValue}/${endpoint}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ decidedByUserId: `slack:${userId}` }),
-        },
-      );
-
-      await respondToAction(
-        pluginCtx,
-        pluginToken,
-        responseUrl,
-        formatApprovalResolved(actionValue, approved, userId),
-      );
-      await pluginCtx.metrics.write("slack.approvals.decided", 1, { decision: endpoint });
-    } catch (err) {
-      pluginCtx.logger.warn("Failed to handle approval action", { err, approvalId: actionValue });
-    }
+    // Approvals are decided in Paperclip, never from Slack.
+    pluginCtx.logger.warn("Ignoring Slack approval action", { actionId, userId });
     return;
   }
 
@@ -1356,32 +1314,11 @@ const plugin = definePlugin({
     // =========================================================================
 
     ctx.tools.register(
-      "escalate_to_human",
+      escalateToHumanTool.name,
       {
-        displayName: "Escalate to Human",
-        description: "Escalates the current conversation to a human operator via the configured Slack escalation channel.",
-        parametersSchema: {
-          type: "object",
-          properties: {
-            reason: { type: "string", description: "Why the agent is escalating" },
-            confidence: { type: "number", description: "Agent confidence score (0-1)" },
-            agentName: { type: "string", description: "Name of the escalating agent" },
-            conversationHistory: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  role: { type: "string" },
-                  text: { type: "string" },
-                },
-              },
-              description: "Last N messages of conversation context",
-            },
-            agentReasoning: { type: "string", description: "Agent's reasoning for the escalation" },
-            suggestedReply: { type: "string", description: "Agent's suggested reply for the human to use" },
-          },
-          required: ["reason"],
-        },
+        displayName: escalateToHumanTool.displayName,
+        description: escalateToHumanTool.description,
+        parametersSchema: escalateToHumanTool.parametersSchema,
       },
       async (params: unknown, runCtx) => {
         const p = params as Record<string, unknown>;
@@ -1402,7 +1339,8 @@ const plugin = definePlugin({
           createdAt: new Date().toISOString(),
         };
 
-        const channelId = rt.config.escalationChatId || rt.config.approvalsChannelId || rt.config.defaultChannelId;
+        // The channel comes only from config, never from tool parameters.
+        const channelId = rt.config.escalationChatId || rt.config.defaultChannelId;
         if (!channelId) {
           return { error: "No escalation channel configured" };
         }
@@ -1473,6 +1411,10 @@ const plugin = definePlugin({
         const threadTs = String(p.threadTs ?? "");
         const context = p.context != null ? String(p.context) : undefined;
 
+        if (!(await resolveAllowedAgentId(ctx, companyId, toAgent))) {
+          return { error: `Agent ${toAgent} is not allowed from Slack` };
+        }
+
         const handoffId = genId("hoff");
 
         await ctx.state.set(
@@ -1532,6 +1474,9 @@ const plugin = definePlugin({
           threadTs: String(p.threadTs ?? ""),
           maxTurns: Number(p.maxTurns ?? 10),
         });
+        if (result.status === "denied") {
+          return { error: "Discussion agents are not allowed from Slack" };
+        }
         return { content: JSON.stringify(result) };
       },
     );
@@ -2193,7 +2138,7 @@ const plugin = definePlugin({
           const session = (sessions as SessionEntry[]).find(
             (s) => s.agentName === String(record.agentName) && s.status === "active",
           );
-          if (session && session.transport === "native") {
+          if (session && session.transport === "native" && isAllowedAgentId(session.agentId)) {
             await ctx.agents.sessions.sendMessage(session.sessionId, event.companyId, {
               prompt: `Human reply to escalation: ${replyText}`,
               reason: "Escalation reply from Slack",

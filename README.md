@@ -28,16 +28,14 @@ This is that plugin.
 **Notifications (rich Block Kit formatting)**
 - **Issue created** - Title, description snippet, status, priority, assignee, project fields, and a "View Issue" button
 - **Issue done** - Completion confirmation with status fields and view button
-- **Approval requested** - Interactive **Approve**, **Reject**, and **View** buttons. Click to act without leaving Slack.
+- **Approval requested** - Notification with a **View** link. Approvals are decided in Paperclip, not in Slack.
 - **Agent error** - Error message in a code block with warning indicator
 - **Agent online** - Connection confirmation with check mark
 - **Budget threshold** - Alerts at 80%, 90%, and 100% budget usage (deduped per threshold)
 - **Onboarding milestone** - Celebrates an agent's first successful run
 
-**Interactive approvals**
-- Approve/reject buttons on every approval notification
-- Clicking a button calls the Paperclip API and updates the Slack message inline
-- Identifies which Slack user acted (logged as `slack:{user_id}`)
+**Approvals**
+- Approvals cannot be decided from Slack. Approve/reject button clicks are logged and ignored, and there is no `/clip approve` command.
 
 **Issue-thread confirmations**
 - Posts pending `request_confirmation` issue interactions to Slack with Accept/Reject buttons
@@ -111,7 +109,6 @@ This is that plugin.
 - `/clip status` - Show active agents and recent completions
 - `/clip agents` - List all agents with status badges
 - `/clip issues [open|done]` - List issues filtered by status
-- `/clip approve <id>` - Approve a pending approval
 - `/clip acp spawn <agent> [display]` - Add an agent to this thread
 - `/clip acp status` - Show all agents in this thread
 - `/clip acp close [name]` - Close a specific agent (or most recent)
@@ -194,6 +191,7 @@ If the plugin looks broken, first confirm which Paperclip host it's actually tal
 | `escalationHoldMessage` | Message sent to customer while waiting (default: "Your request has been escalated to a human agent. Please hold.") |
 | `paperclipBaseUrl` | Base URL for the Paperclip API (default: `http://localhost:3100`) |
 | `maxAgentsPerThread` | Max concurrent agents in a single thread (default: 5) |
+| `allowedAgentIds` | Paperclip agent ids that Slack may start, message or invoke (spawn, routing, handoff, discussion, custom commands, watches, media). Names are resolved to ids within the company and must match exactly one agent. Empty, missing or malformed means no agent is allowed (default: `[]`) |
 
 ## Agent tools
 
