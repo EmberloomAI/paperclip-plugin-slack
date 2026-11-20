@@ -17,6 +17,7 @@ import { SlackSocketModeClient } from "./socket-mode.js";
 import { createSocketModeHandlers, dispatchSlackWebhook } from "./slack-transport.js";
 import {
   spawnAgent,
+  hasActiveSession,
   closeAgent,
   routeMessageToAgent,
   handleAgentOutput,
@@ -31,7 +32,6 @@ import {
   formatIssueCreated,
   formatIssueDone,
   formatApprovalCreated,
-  formatApprovalResolved,
   formatAgentError,
   formatAgentConnected,
   formatBudgetThreshold,
@@ -41,6 +41,8 @@ import {
   formatEscalationResolved,
 } from "./formatters.js";
 import { processMediaFile, isMediaFile } from "./media-pipeline.js";
+import { isAllowedAgentId, isAllowedChannelId, isAllowedUserId, resolveAllowedAgentId, setAllowedAgentIds, setAllowedChannelIds, setAllowedUserIds } from "./agent-allowlist.js";
+import { escalateToHumanTool } from "./manifest.js";
 import {
   registerCommand,
   handleCommandsSlash,
@@ -151,6 +153,9 @@ export function _resetRuntimeForTests(): void {
   refusedCompanies.clear();
   pluginToken = undefined as unknown as string;
   pluginConfig = undefined as unknown as SlackConfig;
+  setAllowedAgentIds([]);
+  setAllowedChannelIds([]);
+  setAllowedUserIds([]);
   slackSigningSecret = null;
   runtimeHealth = {
     status: "degraded",
@@ -236,6 +241,9 @@ function claimOwnership(ctx: PluginContext, companyId: string, config: unknown):
     // company that no longer owns the install is worse than none: a no-arg
     // ensureRuntime() during the bootstrap window would otherwise still serve it.
     runtime = null;
+    setAllowedAgentIds([]);
+    setAllowedChannelIds([]);
+    setAllowedUserIds([]);
     ownerCompanyId = companyId;
     ownerConfigJson = configJson;
     refusedCompanies.delete(companyId);
@@ -400,6 +408,9 @@ async function bootstrapRuntime(
   if (config.paperclipBaseUrl) setBaseUrl(config.paperclipBaseUrl);
   pluginToken = token;
   pluginConfig = config;
+  setAllowedAgentIds(config.allowedAgentIds);
+  setAllowedChannelIds(config.allowedChannelIds);
+  setAllowedUserIds(config.allowedUserIds);
   slackSigningSecret = signingSecret;
 
   if (!signingSecret) {
@@ -561,9 +572,6 @@ async function handleSlashCommand(ctx: PluginContext, rawBody: string, companyId
       case "issues":
         await handleIssuesCommand(ctx, companyId, responseUrl, arg);
         break;
-      case "approve":
-        await handleApproveCommand(ctx, responseUrl, arg);
-        break;
       case "acp": {
         const acpText = parts.slice(1).join(" ");
         await handleAcpSlashCommand(ctx, pluginToken, {
@@ -571,6 +579,7 @@ async function handleSlashCommand(ctx: PluginContext, rawBody: string, companyId
           threadTs,
           text: acpText,
           companyId,
+          maxAgentsPerThread: pluginConfig.maxAgentsPerThread,
         });
         break;
       }
@@ -680,7 +689,6 @@ async function handleHelpCommand(ctx: PluginContext, responseUrl: string): Promi
             "`/clip status` - Show active agents and recent completions",
             "`/clip agents` - List all agents with status badges",
             "`/clip issues [open|done]` - List issues filtered by status",
-            "`/clip approve <id>` - Approve a pending approval",
             "`/clip acp spawn <agent> [display]` - Add an agent to this thread",
             "`/clip acp status` - Show all agents in this thread",
             "`/clip acp close [name]` - Close a specific agent (or most recent)",
@@ -752,29 +760,6 @@ async function handleIssuesCommand(ctx: PluginContext, companyId: string, respon
       },
     ],
   });
-}
-
-async function handleApproveCommand(ctx: PluginContext, responseUrl: string, approvalId: string): Promise<void> {
-  if (!approvalId) {
-    await respondEphemeral(ctx, responseUrl, { text: "Usage: `/clip approve <approval-id>`" });
-    return;
-  }
-
-  try {
-    await ctx.http.fetch(
-      `${pluginConfig.paperclipBaseUrl}/api/approvals/${approvalId}/approve`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decidedByUserId: "slack:command" }),
-      },
-    );
-    await respondEphemeral(ctx, responseUrl, { text: `:white_check_mark: Approval \`${approvalId}\` approved.` });
-    await ctx.metrics.write("slack.approvals.decided", 1, { decision: "approve" });
-  } catch (err) {
-    ctx.logger.warn("Approve command failed", { approvalId, err });
-    await respondEphemeral(ctx, responseUrl, { text: `:x: Failed to approve \`${approvalId}\`. Check the ID and try again.` });
-  }
 }
 
 // --- Shared Slack inbound handlers (webhooks + Socket Mode) ---
@@ -1015,22 +1000,71 @@ async function handleSlackEventsPayload(body: Record<string, unknown>): Promise<
 
   if (eventType === "message") {
     if (event.bot_id || (event.subtype && event.subtype !== "file_share")) return;
+    // Emberloom fork 20/11 (Stefan "a" via Lyra): a direct message from a user in allowedUserIds starts or reaches the
+    // default agent. Any other direct message is ignored. Channels keep the app_mention rule.
+    if (event.channel_type === "im") {
+      if (!isAllowedUserId(event.user)) {
+        pluginCtx.logger.info("Direct message from a user not in allowedUserIds ignored", {});
+        return;
+      }
+      const routed = await handleSlackThreadMessageEvent(companyId, event);
+      if (!routed) await startDefaultAgentOnMention(companyId, event, true);
+      return;
+    }
+    // Emberloom fork 20/11 (after the im branch, Tyra LOW: a DM gets no app_mention): In channels Slack sends both app_mention and message for "@Ember ...". The app_mention path handles it,
+    // so the message copy is skipped; otherwise the agent got the same prompt twice.
+    const bot = String(((body.authorizations as Array<Record<string, unknown>> | undefined)?.[0]?.user_id) ?? "");
+    if (bot && String(event.text ?? "").includes(`<@${bot}>`)) return;
     await handleSlackThreadMessageEvent(companyId, event);
     return;
   }
 
   if (eventType === "app_mention") {
-    const routed = await handleSlackThreadMessageEvent(companyId, event);
-    if (!routed) {
-      const channel = String(event.channel ?? "");
-      const threadTs = String(event.thread_ts ?? event.ts ?? "");
-      if (channel && threadTs) {
-        await postMessage(pluginCtx, pluginToken, channel, {
-          text: "No active Paperclip agents are attached to this thread. Use `/clip acp spawn <agent>` first.",
-        }, { threadTs });
-      }
+    // Same filter as plain messages: bots (including this app) and edited or system subtypes never route or start an agent.
+    if (event.bot_id || event.subtype) {
+      pluginCtx.logger.info("app_mention ignored", { reason: event.bot_id ? "bot" : `subtype ${String(event.subtype)}` });
+      return;
     }
+    const routed = await handleSlackThreadMessageEvent(companyId, event);
+    if (!routed) await startDefaultAgentOnMention(companyId, event);
   }
+}
+
+/**
+ * Emberloom fork: an @mention in an allowed channel, in a thread with no active
+ * agent, starts the configured default agent and routes the message to it.
+ * Fails closed with no reply: channel not in allowedChannelIds, defaultAgentId
+ * not resolving to an allowed agent, or spawnAgent refusing (maxAgentsPerThread,
+ * agent already active).
+ */
+async function startDefaultAgentOnMention(companyId: string, event: Record<string, unknown>, directMessage = false): Promise<void> {
+  const channel = String(event.channel ?? "");
+  const threadTs = String(event.thread_ts ?? event.ts ?? "");
+  if (!channel || !threadTs) return;
+  // A direct message is already checked against allowedUserIds by the caller; a channel must be in allowedChannelIds.
+  if (directMessage ? !isAllowedUserId(event.user) : !isAllowedChannelId(channel)) {
+    pluginCtx.logger.warn("Mention in a channel not in allowedChannelIds; no agent started", { channel });
+    return;
+  }
+  if (await hasActiveSession(pluginCtx, companyId, channel, threadTs)) {
+    pluginCtx.logger.warn("Thread already has an active agent; no default agent started", { channel, threadTs });
+    return;
+  }
+  const agentId = await resolveAllowedAgentId(pluginCtx, companyId, pluginConfig?.defaultAgentId);
+  if (!agentId) return;
+  let displayName = agentId;
+  try {
+    const agents = await pluginCtx.agents.list({ companyId, limit: 100, offset: 0 });
+    displayName = agents.find((a) => a.id === agentId)?.name ?? agentId;
+  } catch {
+    // keep the id as the display name
+  }
+  const entry = await spawnAgent(
+    pluginCtx, companyId, channel, threadTs, agentId, displayName,
+    `Mentioned in Slack ${channel}/${threadTs}`, pluginConfig?.maxAgentsPerThread,
+  );
+  if (!entry) return;
+  await handleSlackThreadMessageEvent(companyId, event);
 }
 
 async function handleSlackThreadMessageEvent(
@@ -1212,28 +1246,8 @@ async function handleInteractivityPayload(payload: Record<string, unknown>): Pro
 
 
   if (actionId === "approval_approve" || actionId === "approval_reject") {
-    const approved = actionId === "approval_approve";
-    const endpoint = approved ? "approve" : "reject";
-    try {
-      await pluginCtx.http.fetch(
-        `${pluginConfig.paperclipBaseUrl}/api/approvals/${actionValue}/${endpoint}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ decidedByUserId: `slack:${userId}` }),
-        },
-      );
-
-      await respondToAction(
-        pluginCtx,
-        pluginToken,
-        responseUrl,
-        formatApprovalResolved(actionValue, approved, userId),
-      );
-      await pluginCtx.metrics.write("slack.approvals.decided", 1, { decision: endpoint });
-    } catch (err) {
-      pluginCtx.logger.warn("Failed to handle approval action", { err, approvalId: actionValue });
-    }
+    // Approvals are decided in Paperclip, never from Slack.
+    pluginCtx.logger.warn("Ignoring Slack approval action", { actionId, userId });
     return;
   }
 
@@ -1356,45 +1370,37 @@ const plugin = definePlugin({
     // =========================================================================
 
     ctx.tools.register(
-      "escalate_to_human",
+      escalateToHumanTool.name,
       {
-        displayName: "Escalate to Human",
-        description: "Escalates the current conversation to a human operator via the configured Slack escalation channel.",
-        parametersSchema: {
-          type: "object",
-          properties: {
-            reason: { type: "string", description: "Why the agent is escalating" },
-            confidence: { type: "number", description: "Agent confidence score (0-1)" },
-            agentName: { type: "string", description: "Name of the escalating agent" },
-            conversationHistory: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  role: { type: "string" },
-                  text: { type: "string" },
-                },
-              },
-              description: "Last N messages of conversation context",
-            },
-            agentReasoning: { type: "string", description: "Agent's reasoning for the escalation" },
-            suggestedReply: { type: "string", description: "Agent's suggested reply for the human to use" },
-          },
-          required: ["reason"],
-        },
+        displayName: escalateToHumanTool.displayName,
+        description: escalateToHumanTool.description,
+        parametersSchema: escalateToHumanTool.parametersSchema,
       },
       async (params: unknown, runCtx) => {
         const p = params as Record<string, unknown>;
         const companyId = runCtx.companyId;
         const rt = ensureRuntime(companyId);
         if (!rt) return { error: "Slack plugin is not configured yet" };
+        // Only allowed agents may post, and the name shown is looked up from the caller's id,
+        // never taken from the parameters.
+        if (!isAllowedAgentId(runCtx.agentId)) {
+          ctx.logger.warn("escalate_to_human denied for agent not in allowedAgentIds", { agentId: runCtx.agentId });
+          return { error: "This agent is not allowed to post to Slack" };
+        }
+        let callerName: string | undefined;
+        try {
+          const agents = await ctx.agents.list({ companyId, limit: 100, offset: 0 });
+          callerName = agents.find((a) => a.id === runCtx.agentId)?.name;
+        } catch {
+          callerName = undefined;
+        }
         const escalationId = genId("esc");
 
         const record: EscalationRecord = {
           id: escalationId,
           reason: String(p.reason ?? ""),
           confidence: p.confidence != null ? Number(p.confidence) : undefined,
-          agentName: p.agentName != null ? String(p.agentName) : undefined,
+          agentName: callerName,
           conversationHistory: p.conversationHistory as Array<{ role: string; text: string }> | undefined,
           agentReasoning: p.agentReasoning != null ? String(p.agentReasoning) : undefined,
           suggestedReply: p.suggestedReply != null ? String(p.suggestedReply) : undefined,
@@ -1402,7 +1408,8 @@ const plugin = definePlugin({
           createdAt: new Date().toISOString(),
         };
 
-        const channelId = rt.config.escalationChatId || rt.config.approvalsChannelId || rt.config.defaultChannelId;
+        // The channel comes only from config, never from tool parameters.
+        const channelId = rt.config.escalationChatId || rt.config.defaultChannelId;
         if (!channelId) {
           return { error: "No escalation channel configured" };
         }
@@ -1473,6 +1480,10 @@ const plugin = definePlugin({
         const threadTs = String(p.threadTs ?? "");
         const context = p.context != null ? String(p.context) : undefined;
 
+        if (!(await resolveAllowedAgentId(ctx, companyId, toAgent))) {
+          return { error: `Agent ${toAgent} is not allowed from Slack` };
+        }
+
         const handoffId = genId("hoff");
 
         await ctx.state.set(
@@ -1532,6 +1543,9 @@ const plugin = definePlugin({
           threadTs: String(p.threadTs ?? ""),
           maxTurns: Number(p.maxTurns ?? 10),
         });
+        if (result.status === "denied") {
+          return { error: "Discussion agents are not allowed from Slack" };
+        }
         return { content: JSON.stringify(result) };
       },
     );
@@ -2127,7 +2141,7 @@ const plugin = definePlugin({
     // =========================================================================
 
     // Native agent streaming output
-    ctx.events.on("plugin.slack.agent-stream-chunk", async (event: PluginEvent) => {
+    ctx.events.on(`plugin.${PLUGIN_ID}.slack.agent-stream-chunk`, async (event: PluginEvent) => {
       const rt = ensureRuntime(event.companyId);
       if (!rt) return;
       const p = event.payload as Record<string, unknown>;
@@ -2157,7 +2171,7 @@ const plugin = definePlugin({
     });
 
     // Escalation thread reply routing (from Slack Events API)
-    ctx.events.on("plugin.slack.thread_reply_escalation", async (event: PluginEvent) => {
+    ctx.events.on(`plugin.${PLUGIN_ID}.slack.thread_reply_escalation`, async (event: PluginEvent) => {
       if (!ensureRuntime(event.companyId)) return;
       const p = event.payload as Record<string, unknown>;
       const escalationId = String(p.escalationId ?? "");
@@ -2193,7 +2207,7 @@ const plugin = definePlugin({
           const session = (sessions as SessionEntry[]).find(
             (s) => s.agentName === String(record.agentName) && s.status === "active",
           );
-          if (session && session.transport === "native") {
+          if (session && session.transport === "native" && isAllowedAgentId(session.agentId)) {
             await ctx.agents.sessions.sendMessage(session.sessionId, event.companyId, {
               prompt: `Human reply to escalation: ${replyText}`,
               reason: "Escalation reply from Slack",
@@ -2206,7 +2220,7 @@ const plugin = definePlugin({
     });
 
     // Thread message routing (multi-agent + custom commands + media)
-    ctx.events.on("plugin.slack.thread_message", async (event: PluginEvent) => {
+    ctx.events.on(`plugin.${PLUGIN_ID}.slack.thread_message`, async (event: PluginEvent) => {
       const rt = ensureRuntime(event.companyId);
       if (!rt) return;
       const p = event.payload as Record<string, unknown>;

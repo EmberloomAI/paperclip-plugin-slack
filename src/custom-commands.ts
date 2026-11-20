@@ -2,6 +2,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import type { CommandDefinition, CommandStep } from "./types.js";
 import { postMessage, respondEphemeral } from "./slack-api.js";
 import { STATE_KEYS } from "./constants.js";
+import { requireAllowedAgentId } from "./agent-allowlist.js";
 
 // --- Command registry ---
 
@@ -148,7 +149,8 @@ async function executeStep(
       if (!step.agentId) throw new Error("invoke_agent step requires agentId");
       const prompt = interpolateArgs(step.prompt ?? "", args);
 
-      const result = await ctx.agents.invoke(step.agentId, companyId, {
+      const agentId = await requireAllowedAgentId(ctx, companyId, step.agentId);
+      const result = await ctx.agents.invoke(agentId, companyId, {
         prompt,
         reason: `Custom command step: ${stepLabel}`,
       });

@@ -23,6 +23,10 @@ export type SlackConfig = {
   escalationHoldMessage: string;
   paperclipBaseUrl: string;
   maxAgentsPerThread: number;
+  allowedAgentIds: string[];
+  defaultAgentId: string;
+  allowedChannelIds: string[];
+  allowedUserIds: string[];
 };
 
 // --- Session registry types ---

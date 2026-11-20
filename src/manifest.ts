@@ -1,4 +1,4 @@
-import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
+import type { PaperclipPluginManifestV1, PluginToolDeclaration } from "@paperclipai/plugin-sdk";
 import {
   DEFAULT_CONFIG,
   EXPORT_NAMES,
@@ -7,6 +7,37 @@ import {
   SLOT_IDS,
   WEBHOOK_KEYS,
 } from "./constants.js";
+
+/**
+ * The only agent tool this plugin exposes. The host exposes only tools declared
+ * in the manifest; the multi-agent and media tools stay undeclared on purpose.
+ */
+export const escalateToHumanTool: PluginToolDeclaration = {
+  name: "escalate_to_human",
+  displayName: "Escalate to Human",
+  description: "Escalates the current conversation to a human operator via the configured Slack escalation channel.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      reason: { type: "string", description: "Why the agent is escalating" },
+      confidence: { type: "number", description: "Agent confidence score (0-1)" },
+      conversationHistory: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            role: { type: "string" },
+            text: { type: "string" },
+          },
+        },
+        description: "Last N messages of conversation context",
+      },
+      agentReasoning: { type: "string", description: "Agent's reasoning for the escalation" },
+      suggestedReply: { type: "string", description: "Agent's suggested reply for the human to use" },
+    },
+    required: ["reason"],
+  },
+};
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -42,6 +73,7 @@ const manifest: PaperclipPluginManifestV1 = {
   entrypoints: {
     worker: "./dist/worker.js",
   },
+  tools: [escalateToHumanTool],
   instanceConfigSchema: {
     type: "object",
     additionalProperties: true,
@@ -179,6 +211,35 @@ const manifest: PaperclipPluginManifestV1 = {
         title: "Max Agents Per Thread",
         description: "Maximum number of concurrent agents allowed in a single Slack thread.",
         default: DEFAULT_CONFIG.maxAgentsPerThread,
+      },
+      allowedAgentIds: {
+        type: "array",
+        items: { type: "string" },
+        title: "Allowed Agent IDs",
+        description:
+          "Paperclip agent ids that Slack may start or message. Empty means no agent is allowed.",
+        default: DEFAULT_CONFIG.allowedAgentIds,
+      },
+      defaultAgentId: {
+        type: "string",
+        title: "Default Agent ID",
+        description:
+          "Agent started when the bot is @mentioned in an allowed channel and the thread has no active agent. Must also be in allowedAgentIds.",
+        default: DEFAULT_CONFIG.defaultAgentId,
+      },
+      allowedChannelIds: {
+        type: "array",
+        items: { type: "string" },
+        title: "Allowed Channel IDs",
+        description: "Slack channels where an @mention may start the default agent. Empty means none.",
+        default: DEFAULT_CONFIG.allowedChannelIds,
+      },
+      allowedUserIds: {
+        type: "array",
+        items: { type: "string" },
+        title: "Allowed User IDs (direct messages)",
+        description: "Slack user ids whose direct messages to the bot start or reach the default agent. Empty means no direct messages.",
+        default: DEFAULT_CONFIG.allowedUserIds,
       },
     },
     required: ["slackTokenRef", "slackSigningSecretRef", "defaultChannelId"],

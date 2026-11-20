@@ -11,6 +11,7 @@ import {
   handleAcpSlashCommand,
 } from "../src/acp-bridge.js";
 import { STATE_KEYS } from "../src/constants.js";
+import { setAllowedAgentIds } from "../src/agent-allowlist.js";
 import type { SessionEntry, DiscussionLoop } from "../src/types.js";
 
 // ---------------------------------------------------------------------------
@@ -19,6 +20,13 @@ import type { SessionEntry, DiscussionLoop } from "../src/types.js";
 
 const stateStore = new Map<string, unknown>();
 
+// Agents used by these tests: id equals name, and all are on the allowlist.
+const TEST_AGENT_IDS = [
+  "agent-1", "bot-a", "agent-new", "alpha", "beta", "old-bot", "new-bot", "acp-bot",
+  "AgentA", "AgentB", "A", "B", "my-agent", "solo-bot",
+];
+beforeEach(() => setAllowedAgentIds(TEST_AGENT_IDS));
+
 function makeCtx(overrides: Record<string, unknown> = {}) {
   stateStore.clear();
   return {
@@ -26,7 +34,7 @@ function makeCtx(overrides: Record<string, unknown> = {}) {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     activity: { log: vi.fn().mockResolvedValue(undefined) },
     agents: {
-      list: vi.fn().mockResolvedValue([{ id: "agent-1", name: "CodeBot" }]),
+      list: vi.fn().mockResolvedValue(TEST_AGENT_IDS.map((id) => ({ id, name: id }))),
       sessions: {
         create: vi.fn().mockResolvedValue({ sessionId: "sess-native-1" }),
         sendMessage: vi.fn().mockResolvedValue(undefined),
@@ -58,7 +66,7 @@ function makeCtx(overrides: Record<string, unknown> = {}) {
 function makeSession(overrides: Partial<SessionEntry> = {}): SessionEntry {
   return {
     sessionId: "sess-1",
-    agentId: "agent-1",
+    agentId: overrides.agentName ?? "agent-1",
     agentName: "agent-1",
     agentDisplayName: "CodeBot",
     transport: "native",

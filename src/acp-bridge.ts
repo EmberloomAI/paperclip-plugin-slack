@@ -4,6 +4,7 @@ import type { SessionEntry, DiscussionLoop, QueuedOutput } from "./types.js";
 import { postMessage } from "./slack-api.js";
 import { formatAsBlocks } from "./formatters.js";
 import { STATE_KEYS, DEFAULT_CONFIG, PLUGIN_ID } from "./constants.js";
+import { isAllowedAgentId, resolveAllowedAgentId } from "./agent-allowlist.js";
 
 // --- Session registry (uses ctx.agents.sessions for native, state for ACP) ---
 
@@ -58,6 +59,17 @@ async function touchSession(
   }
 }
 
+/** True when the thread already has an active agent session (Emberloom fork, default agent on mention). */
+export async function hasActiveSession(
+  ctx: PluginContext,
+  companyId: string,
+  channelId: string,
+  threadTs: string,
+): Promise<boolean> {
+  const sessions = await getSessions(ctx, companyId, channelId, threadTs);
+  return sessions.some((s) => s.status === "active");
+}
+
 // --- Spawn agent: native sessions first, ACP fallback ---
 
 export async function spawnAgent(
@@ -68,10 +80,17 @@ export async function spawnAgent(
   agentId: string,
   displayName: string,
   reason?: string,
+  maxAgentsPerThread: number = DEFAULT_CONFIG.maxAgentsPerThread,
 ): Promise<SessionEntry | null> {
+  const resolvedId = await resolveAllowedAgentId(ctx, companyId, agentId);
+  if (!resolvedId) return null;
+
   const sessions = await getSessions(ctx, companyId, channelId, threadTs);
   const activeSessions = sessions.filter((s) => s.status === "active");
-  const maxAgents = DEFAULT_CONFIG.maxAgentsPerThread;
+  const maxAgents =
+    Number.isFinite(maxAgentsPerThread) && maxAgentsPerThread > 0
+      ? maxAgentsPerThread
+      : DEFAULT_CONFIG.maxAgentsPerThread;
 
   if (activeSessions.length >= maxAgents) {
     ctx.logger.warn("Max agents per thread reached", { channelId, threadTs, max: maxAgents });
@@ -84,13 +103,16 @@ export async function spawnAgent(
     return existing;
   }
 
-  const taskKey = `slack-${channelId}-${threadTs}`;
+  // Emberloom fork 20/11: Paperclip 2026.1106 finds a plugin session in sessions.sendMessage only when its taskKey starts
+  // with "plugin:<pluginKey>:session:" (plugin-host-services.js). Upstream's "slack-..." key made every message after a
+  // spawn fail with "Session not found".
+  const taskKey = `plugin:${PLUGIN_ID}:session:slack-${channelId}-${threadTs}`;
   let transport: "native" | "acp" = "acp";
   let sessionId = `acp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   try {
     // Try native agent session first
-    const nativeSession = await ctx.agents.sessions.create(agentId, companyId, {
+    const nativeSession = await ctx.agents.sessions.create(resolvedId, companyId, {
       taskKey,
       reason: reason ?? `Spawned in Slack thread ${channelId}/${threadTs}`,
     });
@@ -101,7 +123,7 @@ export async function spawnAgent(
     // Fallback to ACP
     ctx.logger.info("Native session failed, falling back to ACP", { agentId, err });
     ctx.events.emit("acp-spawn", companyId, {
-      agentId,
+      agentId: resolvedId,
       channelId,
       threadTs,
       taskKey,
@@ -112,7 +134,7 @@ export async function spawnAgent(
   const now = new Date().toISOString();
   const entry: SessionEntry = {
     sessionId,
-    agentId,
+    agentId: resolvedId,
     agentName: agentId,
     agentDisplayName: displayName,
     transport,
@@ -227,18 +249,27 @@ export async function routeMessageToAgent(
 
   const target = await resolveTargetAgent(ctx, companyId, channel, threadTs, text, replyToAgentName);
   if (!target) return false;
+  if (!isAllowedAgentId(target.agentId)) {
+    ctx.logger.warn("Agent not allowed from Slack; message not routed", { agentId: target.agentId });
+    return false;
+  }
 
   await touchSession(ctx, companyId, channel, threadTs, target.agentName);
 
   if (target.transport === "native") {
     // Use native session messaging - real SDK API
+    try {
     await ctx.agents.sessions.sendMessage(target.sessionId, companyId, {
       prompt: text,
       reason: `Slack message in ${channel}/${threadTs}`,
       onEvent: (event) => {
-        if (event.eventType === "chunk" && event.message) {
-          // Streaming output handled via event listener
-          ctx.events.emit("plugin.slack.agent-stream-chunk", companyId, {
+        // Emberloom fork 20/11: on Paperclip 2026.1106 "chunk" events are the run's log and status lines (for example
+        // "startup reuse: provider_process (fresh)"), not the assistant's text. Only the terminal "done" event carries the
+        // answer (finalText), so only that goes to Slack.
+        if (event.eventType === "done" && event.message) {
+          // Streaming output handled via event listener. Emberloom fork 20/11: the host namespaces plugin events as
+          // plugin.<pluginKey>.<name> and rejects names that already start with "plugin.", so emit the bare name.
+          ctx.events.emit("slack.agent-stream-chunk", companyId, {
             agentName: target.agentName,
             agentDisplayName: target.agentDisplayName,
             sessionId: target.sessionId,
@@ -249,10 +280,20 @@ export async function routeMessageToAgent(
         }
       },
     });
+    } catch (err) {
+      // Emberloom fork 20/11: a session the host no longer finds (for example one created before the taskKey fix) is
+      // closed, so that the next @mention starts a fresh one instead of failing silently in the same thread.
+      if (!/Session not found/i.test(String((err as Error)?.message ?? err))) throw err;
+      ctx.logger.warn("Agent session not found; closing it in the thread registry", { sessionId: target.sessionId });
+      const all = await getSessions(ctx, companyId, channel, threadTs);
+      for (const s of all) if (s.sessionId === target.sessionId) s.status = "closed";
+      await setSessions(ctx, companyId, channel, threadTs, all);
+      return false;
+    }
   } else {
     // ACP fallback
     ctx.events.emit("acp-message", companyId, {
-      agentId: target.agentName,
+      agentId: target.agentId,
       sessionId: target.sessionId,
       channel,
       threadTs,
@@ -518,9 +559,12 @@ export async function handleHandoffAction(
     const fromAgent = String(raw.fromAgent ?? "");
     const context = raw.context != null ? String(raw.context) : undefined;
 
+    const toAgentId = await resolveAllowedAgentId(ctx, companyId, toAgent);
+    if (!toAgentId) return;
+
     // Try to route via native session
     const sessions = await getSessions(ctx, companyId, channelId, threadTs);
-    const targetSession = sessions.find((s) => s.agentName === toAgent && s.status === "active");
+    const targetSession = sessions.find((s) => s.agentId === toAgentId && s.status === "active");
 
     if (targetSession && targetSession.transport === "native") {
       await ctx.agents.sessions.sendMessage(targetSession.sessionId, companyId, {
@@ -529,7 +573,7 @@ export async function handleHandoffAction(
       });
     } else {
       ctx.events.emit("acp-message", companyId, {
-        agentId: toAgent,
+        agentId: toAgentId,
         channel: channelId,
         threadTs,
         text: context ?? `Handoff from ${fromAgent}: ${String(raw.reason ?? "")}`,
@@ -564,6 +608,10 @@ export async function startDiscussion(
   },
 ): Promise<{ discussionId: string; status: string }> {
   const { initiatorAgent, targetAgent, topic, channelId, threadTs, maxTurns } = params;
+  const targetAgentId = await resolveAllowedAgentId(ctx, companyId, targetAgent);
+  if (!targetAgentId || !(await resolveAllowedAgentId(ctx, companyId, initiatorAgent))) {
+    return { discussionId: "", status: "denied" };
+  }
   const discussionId = `disc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
   const loop: DiscussionLoop = {
@@ -608,7 +656,7 @@ export async function startDiscussion(
 
   // Kick off: send topic to target agent via native or ACP
   const sessions = await getSessions(ctx, companyId, channelId, threadTs);
-  const targetSession = sessions.find((s) => s.agentName === targetAgent && s.status === "active");
+  const targetSession = sessions.find((s) => s.agentId === targetAgentId && s.status === "active");
 
   if (targetSession && targetSession.transport === "native") {
     await ctx.agents.sessions.sendMessage(targetSession.sessionId, companyId, {
@@ -617,7 +665,7 @@ export async function startDiscussion(
     });
   } else {
     ctx.events.emit("acp-message", companyId, {
-      agentId: targetAgent,
+      agentId: targetAgentId,
       channel: channelId,
       threadTs,
       text: `[Discussion with ${initiatorAgent}] ${topic}`,
@@ -763,8 +811,10 @@ async function advanceDiscussionLoop(
   }
 
   // Send to next agent via native or ACP
+  const nextAgentId = await resolveAllowedAgentId(ctx, companyId, nextAgent);
+  if (!nextAgentId) return;
   const sessions = await getSessions(ctx, companyId, channelId, threadTs);
-  const nextSession = sessions.find((s) => s.agentName === nextAgent && s.status === "active");
+  const nextSession = sessions.find((s) => s.agentId === nextAgentId && s.status === "active");
 
   if (nextSession && nextSession.transport === "native") {
     await ctx.agents.sessions.sendMessage(nextSession.sessionId, companyId, {
@@ -773,7 +823,7 @@ async function advanceDiscussionLoop(
     });
   } else {
     ctx.events.emit("acp-message", companyId, {
-      agentId: nextAgent,
+      agentId: nextAgentId,
       channel: channelId,
       threadTs,
       text: `[Discussion with ${agentName}] ${text}`,
@@ -830,8 +880,10 @@ export async function handleDiscussionAction(
   const nextAgent = raw.turns % 2 === 0 ? raw.targetAgent : raw.initiatorAgent;
   const fromAgent = nextAgent === raw.targetAgent ? raw.initiatorAgent : raw.targetAgent;
 
+  const nextAgentId = await resolveAllowedAgentId(ctx, companyId, nextAgent);
+  if (!nextAgentId) return;
   const sessions = await getSessions(ctx, raw.companyId ?? companyId, raw.channelId, raw.threadTs);
-  const nextSession = sessions.find((s) => s.agentName === nextAgent && s.status === "active");
+  const nextSession = sessions.find((s) => s.agentId === nextAgentId && s.status === "active");
 
   if (nextSession && nextSession.transport === "native") {
     await ctx.agents.sessions.sendMessage(nextSession.sessionId, companyId, {
@@ -840,7 +892,7 @@ export async function handleDiscussionAction(
     });
   } else {
     ctx.events.emit("acp-message", companyId, {
-      agentId: nextAgent,
+      agentId: nextAgentId,
       channel: raw.channelId,
       threadTs: raw.threadTs,
       text: "[Discussion resumed] Please continue the discussion.",
@@ -855,7 +907,7 @@ export async function handleDiscussionAction(
 export async function handleAcpSlashCommand(
   ctx: PluginContext,
   token: string,
-  payload: { channel: string; threadTs: string; text: string; companyId: string },
+  payload: { channel: string; threadTs: string; text: string; companyId: string; maxAgentsPerThread?: number },
 ): Promise<void> {
   const subArgs = payload.text.trim().split(/\s+/);
   const sub = subArgs[0]?.toLowerCase() ?? "";
@@ -867,7 +919,10 @@ export async function handleAcpSlashCommand(
       return;
     }
     const displayName = subArgs[2] ?? agentName;
-    const entry = await spawnAgent(ctx, payload.companyId, payload.channel, payload.threadTs, agentName, displayName);
+    const entry = await spawnAgent(
+      ctx, payload.companyId, payload.channel, payload.threadTs, agentName, displayName,
+      undefined, payload.maxAgentsPerThread,
+    );
     if (entry) {
       await postMessage(ctx, token, payload.channel, {
         text: `Agent ${displayName} spawned (${entry.transport})`,
