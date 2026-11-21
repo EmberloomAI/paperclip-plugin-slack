@@ -259,6 +259,13 @@ const manifest: PaperclipPluginManifestV1 = {
         description: "Slack user ids whose direct messages to the bot start or reach the default agent. Empty means no direct messages.",
         default: DEFAULT_CONFIG.allowedUserIds,
       },
+      trustedUserIds: {
+        type: "array",
+        items: { type: "string" },
+        title: "Trusted User IDs",
+        description: "Slack user ids whose messages reach the agent. Everyone else is a guest and gets a fixed reply from the plugin; no agent reads a guest's text. Empty means everyone is a guest.",
+        default: DEFAULT_CONFIG.trustedUserIds,
+      },
     },
     required: ["slackTokenRef", "slackSigningSecretRef", "defaultChannelId"],
   },

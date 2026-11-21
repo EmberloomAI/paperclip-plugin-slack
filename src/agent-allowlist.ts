@@ -46,6 +46,22 @@ export function isAllowedUserId(id: unknown): boolean {
   return typeof id === "string" && allowedUsers.has(id);
 }
 
+/**
+ * Emberloom fork 21/11 (bottar-samma-skydd): the users whose text is not treated as a guest's. Everyone else
+ * (also an allowed DM user who is not on this list) is a guest: the plugin answers with a fixed reply and no agent
+ * reads the text. Fails closed: empty or invalid means nobody is trusted.
+ */
+let trustedUsers: ReadonlySet<string> = new Set();
+
+export function setTrustedUserIds(value: unknown): void {
+  const valid = Array.isArray(value) && value.every((id) => typeof id === "string" && id.length > 0);
+  trustedUsers = new Set(valid ? (value as string[]) : []);
+}
+
+export function isTrustedUserId(id: unknown): boolean {
+  return typeof id === "string" && trustedUsers.has(id);
+}
+
 export function isAllowedAgentId(id: unknown): boolean {
   return typeof id === "string" && allowedIds.has(id);
 }

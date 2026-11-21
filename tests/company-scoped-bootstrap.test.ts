@@ -51,6 +51,7 @@ function storedConfig(overrides: Record<string, unknown> = {}) {
     slackSigningSecretRef: { type: "secret_ref", secretId: SIGNING_SECRET_ID, version: "latest" },
     defaultChannelId: "C01ABC2DEF3",
     enableDailyDigest: false,
+    trustedUserIds: ["U0AU87LMNUC"],
     ...overrides,
   };
 }
@@ -661,7 +662,7 @@ describe("Socket Mode invocation lifetime", () => {
       releaseOpen();
       await vi.waitFor(() => expect(socket).toBeDefined());
       socket.fire({ envelope_id: "1", type: "slash_commands", payload: {
-        command: "/clip", text: "status", response_url: "https://hooks.slack.invalid/response", channel_id: "C1",
+        command: "/clip", text: "status", user_id: "U0AU87LMNUC", response_url: "https://hooks.slack.invalid/response", channel_id: "C1",
       } });
       await vi.waitFor(() => expect(seen).toEqual([{ invocation: undefined, companyId: COMPANY_A }]));
       expect(host.ctx.companies.list).not.toHaveBeenCalled();
