@@ -562,6 +562,28 @@ describe("guests get a fixed reply and never reach an agent (bottar-samma-skydd 
     expect(JSON.stringify(ctx.http.fetch.mock.calls)).not.toContain("files.info");
   });
 
+  it("a plain channel message from a guest, without a mention, gives no post (Tyra MEDIUM 21/11)", async () => {
+    const { ctx } = await setup(base);
+    const body = { type: "event_callback", event: { type: "message", channel: OFFICE, ts: "1700000000.000900", user: GAST, text: "hej alla" } };
+    await signed("slack-events", JSON.stringify(body), body);
+    expect(posts(ctx)).toHaveLength(0);
+    expect(ctx.agents.sessions.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("a guest mention in a channel that is not allowed gives no post", async () => {
+    const { ctx } = await setup(base);
+    const body = { type: "event_callback", event: { type: "app_mention", channel: "C-kund", ts: "1700000000.001000", user: GAST, text: "<@B> hej" } };
+    await signed("slack-events", JSON.stringify(body), body);
+    expect(posts(ctx)).toHaveLength(0);
+  });
+
+  it("the guest reply is posted at most once per thread", async () => {
+    const { ctx } = await setup(base);
+    await event("app_mention", GAST, "<@B> hej");
+    await event("app_mention", GAST, "<@B> hej igen");
+    expect(posts(ctx)).toHaveLength(1);
+  });
+
   it("empty trustedUserIds makes everyone a guest (fail closed)", async () => {
     const { ctx } = await setup({ ...base, trustedUserIds: [] });
     await event("app_mention", STEFAN, "<@B> hej");

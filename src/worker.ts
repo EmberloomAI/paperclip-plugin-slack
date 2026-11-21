@@ -1092,7 +1092,18 @@ async function handleSlackThreadMessageEvent(
     // Atlas 21/11: no AI reads a guest's text until a guest agent without rights exists. The guest gets a fixed
     // reply in the thread from the plugin itself, and nothing reaches an agent. Returning true stops the mention
     // path from starting the default agent.
-    if (runtime?.token) await postMessage(pluginCtx, runtime.token, channel, { text: GUEST_REPLY }, { threadTs });
+    // Tyra MEDIUM 21/11: the reply goes only to an @mention in an allowed channel or a DM from an allowed user, and
+    // at most once per thread. Every other guest message (plain channel messages, other channels) is ignored
+    // silently, so nobody outside gets an unapproved reply for each message.
+    const mention = event.type === "app_mention" && isAllowedChannelId(channel);
+    const dm = event.channel_type === "im" && isAllowedUserId(event.user);
+    if (!mention && !dm) return true;
+    const nyckel = { scopeKind: "company" as const, scopeId: companyId, stateKey: `guest-reply:${channel}:${threadTs}` };
+    if (await pluginCtx.state.get(nyckel)) return true;
+    if (runtime?.token) {
+      const r = await postMessage(pluginCtx, runtime.token, channel, { text: GUEST_REPLY }, { threadTs });
+      if (r.ok) await pluginCtx.state.set(nyckel, new Date().toISOString());
+    }
     pluginCtx.logger.info("Guest message answered with the standard reply", { channel });
     return true;
   }
