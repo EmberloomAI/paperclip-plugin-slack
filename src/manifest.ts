@@ -263,7 +263,7 @@ const manifest: PaperclipPluginManifestV1 = {
         type: "array",
         items: { type: "string" },
         title: "Trusted User IDs",
-        description: "Slack user ids whose messages are not treated as a guest's. Everyone else gets the guest rules: shorter cleaned text, no files or commands, and no posting tools during their turn. Empty means everyone is a guest.",
+        description: "Slack user ids whose messages reach the agent. Everyone else is a guest and gets a fixed reply from the plugin; no agent reads a guest's text. Empty means everyone is a guest.",
         default: DEFAULT_CONFIG.trustedUserIds,
       },
     },
