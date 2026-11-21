@@ -46,6 +46,37 @@ export function isAllowedUserId(id: unknown): boolean {
   return typeof id === "string" && allowedUsers.has(id);
 }
 
+/**
+ * Emberloom fork 21/11 (bottar-samma-skydd): the users whose text is not treated as a guest's. Everyone else
+ * (also an allowed DM user who is not on this list) is a guest: shorter cleaned text, no files, no commands,
+ * and no posting tools while the guest's turn runs. Fails closed: empty or invalid means nobody is trusted.
+ */
+let trustedUsers: ReadonlySet<string> = new Set();
+let guestUntil = new Map<string, number>();
+export const GUEST_WINDOW_MS = 15 * 60 * 1000;
+
+export function setTrustedUserIds(value: unknown): void {
+  const valid = Array.isArray(value) && value.every((id) => typeof id === "string" && id.length > 0);
+  trustedUsers = new Set(valid ? (value as string[]) : []);
+}
+
+export function isTrustedUserId(id: unknown): boolean {
+  return typeof id === "string" && trustedUsers.has(id);
+}
+
+/** A guest's message was routed to the agent: its posting tools are off for the window. */
+export function markGuestTurn(agentId: string, now = Date.now()): void {
+  guestUntil.set(agentId, now + GUEST_WINDOW_MS);
+}
+
+export function inGuestTurn(agentId: unknown, now = Date.now()): boolean {
+  return typeof agentId === "string" && (guestUntil.get(agentId) ?? 0) > now;
+}
+
+export function _resetGuestTurnsForTests(): void {
+  guestUntil = new Map();
+}
+
 export function isAllowedAgentId(id: unknown): boolean {
   return typeof id === "string" && allowedIds.has(id);
 }

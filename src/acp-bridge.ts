@@ -70,6 +70,17 @@ export async function hasActiveSession(
   return sessions.some((s) => s.status === "active");
 }
 
+/** Agent ids with an active session in the thread (Emberloom fork 21/11, guest turns). */
+export async function activeAgentIdsForThread(
+  ctx: PluginContext,
+  companyId: string,
+  channelId: string,
+  threadTs: string,
+): Promise<string[]> {
+  const sessions = await getSessions(ctx, companyId, channelId, threadTs);
+  return sessions.filter((s) => s.status === "active").map((s) => s.agentId);
+}
+
 // --- Spawn agent: native sessions first, ACP fallback ---
 
 export async function spawnAgent(
