@@ -9,7 +9,7 @@ import {
 } from "./constants.js";
 
 /**
- * The only agent tool this plugin exposes. The host exposes only tools declared
+ * One of the two agent tools this plugin exposes (with post_report). The host exposes only tools declared
  * in the manifest; the multi-agent and media tools stay undeclared on purpose.
  */
 export const escalateToHumanTool: PluginToolDeclaration = {
@@ -36,6 +36,24 @@ export const escalateToHumanTool: PluginToolDeclaration = {
       suggestedReply: { type: "string", description: "Agent's suggested reply for the human to use" },
     },
     required: ["reason"],
+  },
+};
+
+/**
+ * A plain report post in the configured default channel (Stefan 21/11: "jag vill ha det som rapport").
+ * No buttons and no escalation record. The channel comes only from config, never from parameters.
+ */
+export const postReportTool: PluginToolDeclaration = {
+  name: "post_report",
+  displayName: "Post Report",
+  description:
+    "Posts a plain report message in Slack mrkdwn to the configured default channel, as the agent. Use for stand-ups, status and publication notes. No buttons, nobody is asked to answer.",
+  parametersSchema: {
+    type: "object",
+    properties: {
+      text: { type: "string", description: "The report in Slack mrkdwn: *bold* title, short lines, links as <url|text>. At most 3000 characters." },
+    },
+    required: ["text"],
   },
 };
 
@@ -73,7 +91,7 @@ const manifest: PaperclipPluginManifestV1 = {
   entrypoints: {
     worker: "./dist/worker.js",
   },
-  tools: [escalateToHumanTool],
+  tools: [escalateToHumanTool, postReportTool],
   instanceConfigSchema: {
     type: "object",
     additionalProperties: true,
