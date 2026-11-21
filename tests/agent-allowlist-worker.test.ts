@@ -116,8 +116,8 @@ const DENY_CASES: Array<[string, Record<string, unknown>]> = [
 ];
 
 describe("manifest tools", () => {
-  it("declares exactly escalate_to_human", () => {
-    expect((manifest.tools ?? []).map((t) => t.name)).toEqual(["escalate_to_human"]);
+  it("declares exactly escalate_to_human and post_report", () => {
+    expect((manifest.tools ?? []).map((t) => t.name)).toEqual(["escalate_to_human", "post_report"]);
   });
 
   it("registers escalate_to_human with the declared schema", async () => {
@@ -172,6 +172,53 @@ describe("escalate_to_human caller", () => {
       expect(ctx.state.set).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("post_report", () => {
+  const posts = (ctx: any) => ctx.http.fetch.mock.calls.filter((c: any[]) => String(c[0]).endsWith("chat.postMessage"));
+
+  it("posts plain mrkdwn text to the default channel, not the escalation channel, and ignores a channel in the parameters", async () => {
+    const { ctx } = await setup();
+    const r = await tool(ctx, "post_report")(
+      { text: "*Stand-up 21/11*\n• Klart: EMB-866\n<https://emberloom.ai|Öppna sidan>", channelId: "C-evil", channel: "C-evil" },
+      { companyId: COMPANY, agentId: EMBER },
+    );
+    expect(r.error).toBeUndefined();
+    expect(posts(ctx)).toHaveLength(1);
+    const body = JSON.parse(posts(ctx)[0][1].body);
+    expect(body.channel).toBe("C-default");
+    expect(body.text).toContain("*Stand-up 21/11*");
+    expect(body.blocks).toBeUndefined();
+    expect(JSON.stringify(ctx.http.fetch.mock.calls)).not.toContain("C-evil");
+    expect(ctx.state.set).not.toHaveBeenCalled();
+  });
+
+  it.each([["agent not on the list", {}, STELLA], ["empty allowlist", { allowedAgentIds: [] }, EMBER], ["missing agentId", {}, undefined]])(
+    "%s: error, nothing posted",
+    async (_l, config, agentId) => {
+      const { ctx } = await setup(config as Record<string, unknown>);
+      const r = await tool(ctx, "post_report")({ text: "*Rapport*" }, { companyId: COMPANY, agentId });
+      expect(r.error).toMatch(/not allowed/);
+      expect(ctx.http.fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([["<!channel> alla"], ["<!here>"], ["<!everyone>"], ["hej <@U0AU87LMNUC>"], ["<!subteam^S123>"]])(
+    "rejects mentions: %s",
+    async (text) => {
+      const { ctx } = await setup();
+      const r = await tool(ctx, "post_report")({ text }, { companyId: COMPANY, agentId: EMBER });
+      expect(r.error).toMatch(/not allowed/);
+      expect(ctx.http.fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects empty and too long text", async () => {
+    const { ctx } = await setup();
+    expect((await tool(ctx, "post_report")({ text: "  " }, { companyId: COMPANY, agentId: EMBER })).error).toMatch(/required/);
+    expect((await tool(ctx, "post_report")({ text: "x".repeat(3001) }, { companyId: COMPANY, agentId: EMBER })).error).toMatch(/3000/);
+    expect(ctx.http.fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("handoff_to_agent tool", () => {

@@ -42,7 +42,7 @@ import {
 } from "./formatters.js";
 import { processMediaFile, isMediaFile } from "./media-pipeline.js";
 import { isAllowedAgentId, isAllowedChannelId, isAllowedUserId, resolveAllowedAgentId, setAllowedAgentIds, setAllowedChannelIds, setAllowedUserIds } from "./agent-allowlist.js";
-import { escalateToHumanTool } from "./manifest.js";
+import { escalateToHumanTool, postReportTool } from "./manifest.js";
 import {
   registerCommand,
   handleCommandsSlash,
@@ -1443,6 +1443,41 @@ const plugin = definePlugin({
           return { content: JSON.stringify({ escalationId, holdMessage: rt.config.escalationHoldMessage }) };
         }
         return { content: JSON.stringify({ escalationId }) };
+      },
+    );
+
+    // post_report (Stefan 21/11): a plain mrkdwn report as the agent in the default channel. No buttons,
+    // no escalation record. Only allowed agents, the channel only from config, and no broadcast or user
+    // mentions, so a report can never page the whole channel or pull in someone else.
+    ctx.tools.register(
+      postReportTool.name,
+      {
+        displayName: postReportTool.displayName,
+        description: postReportTool.description,
+        parametersSchema: postReportTool.parametersSchema,
+      },
+      async (params: unknown, runCtx) => {
+        const p = (params ?? {}) as Record<string, unknown>;
+        const companyId = runCtx.companyId;
+        const rt = ensureRuntime(companyId);
+        if (!rt) return { error: "Slack plugin is not configured yet" };
+        if (!isAllowedAgentId(runCtx.agentId)) {
+          ctx.logger.warn("post_report denied for agent not in allowedAgentIds", { agentId: runCtx.agentId });
+          return { error: "This agent is not allowed to post to Slack" };
+        }
+        const text = typeof p.text === "string" ? p.text.trim() : "";
+        if (!text) return { error: "text is required" };
+        if (text.length > 3000) return { error: "text is longer than 3000 characters" };
+        if (/<!(channel|here|everyone|subteam\^)|<@[A-Z0-9]+>/i.test(text)) {
+          return { error: "Mentions and @channel, @here or @everyone are not allowed in a report" };
+        }
+        const channelId = rt.config.defaultChannelId;
+        if (!channelId) return { error: "No default channel configured" };
+        const result = await postMessage(ctx, rt.token, channelId, { text });
+        if (!result.ok) return { error: `Slack did not accept the post: ${result.error ?? "unknown"}` };
+        await ctx.activity.log({ companyId, message: "Report posted to Slack", entityType: "plugin", entityId: result.ts ?? "report" });
+        await ctx.metrics.write("slack.reports.posted", 1);
+        return { content: JSON.stringify({ ok: true, ts: result.ts }) };
       },
     );
 
