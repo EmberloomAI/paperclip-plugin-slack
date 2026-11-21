@@ -275,13 +275,30 @@ describe("escalation reply to an agent session", () => {
       transport: "native", status: "active", spawnedAt: "", lastActivityAt: "",
     }]);
   }
-  const event = { companyId: COMPANY, payload: { escalationId: "esc-1", text: "answer", userId: "U1" } };
+  const event = { companyId: COMPANY, payload: { escalationId: "esc-1", text: "answer", userId: "U0AU87LMNUC" } };
 
   it("allowed: sends the human reply to the session", async () => {
     const { ctx, store, handlers } = await setup();
     seed(store);
     await handlers.get("plugin.paperclip-plugin-slack.slack.thread_reply_escalation")(event);
     expect(ctx.agents.sessions.sendMessage).toHaveBeenCalledWith("sess-ember", COMPANY, expect.any(Object));
+  });
+
+  it("a reply from a user who is not trusted is not sent, and a trusted reply is cleaned (Tyra LOW 21/11)", async () => {
+    const { ctx, store, handlers } = await setup();
+    seed(store);
+    await handlers.get("plugin.paperclip-plugin-slack.slack.thread_reply_escalation")({ ...event, payload: { ...event.payload, userId: "U0GAST01" } });
+    expect(ctx.agents.sessions.sendMessage).not.toHaveBeenCalled();
+    await handlers.get("plugin.paperclip-plugin-slack.slack.thread_reply_escalation")({ ...event, payload: { ...event.payload, text: "se https://evil.example.com" } });
+    expect(String(ctx.agents.sessions.sendMessage.mock.calls[0][2].prompt)).toContain("[länk borttagen: evil.example.com]");
+  });
+
+  it("slash commands from a user who is not trusted do nothing (Tyra LOW 21/11)", async () => {
+    const { ctx } = await setup();
+    const rawBody = new URLSearchParams({ command: "/clip", text: "acp spawn Ember", user_id: "U0GAST01", response_url: "https://hooks.slack.test/r" }).toString();
+    await signed("slash-command", rawBody, undefined);
+    expect(ctx.http.fetch).not.toHaveBeenCalled();
+    expect(ctx.agents.sessions.create).not.toHaveBeenCalled();
   });
 
   it.each(DENY_CASES)("%s: reply not sent", async (_l, config) => {
@@ -317,7 +334,7 @@ describe("approvals are not decided from Slack", () => {
 
   it("help text no longer lists /clip approve", async () => {
     const { ctx } = await setup();
-    const rawBody = new URLSearchParams({ command: "/clip", text: "help", response_url: "https://hooks.slack.test/r" }).toString();
+    const rawBody = new URLSearchParams({ command: "/clip", text: "help", user_id: "U0AU87LMNUC", response_url: "https://hooks.slack.test/r" }).toString();
     await signed("slash-command", rawBody, undefined);
     expect(ctx.http.fetch).toHaveBeenCalled();
     expect(JSON.stringify(ctx.http.fetch.mock.calls)).not.toContain("/clip approve");

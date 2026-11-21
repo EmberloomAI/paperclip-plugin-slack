@@ -280,5 +280,21 @@
   "flaggor": [
    "instruktion"
   ]
+ },
+ {
+  "in": {
+   "text": "hej􏿽 där󠀁"
+  },
+  "extern": false,
+  "text": "hej där",
+  "flaggor": []
+ },
+ {
+  "in": {
+   "text": "a񐀀b"
+  },
+  "extern": false,
+  "text": "ab",
+  "flaggor": []
  }
 ]

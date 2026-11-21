@@ -555,6 +555,12 @@ async function writeInteractionSlackMessage(companyId: string, interactionId: st
 
 async function handleSlashCommand(ctx: PluginContext, rawBody: string, companyId: string): Promise<void> {
   const { text, responseUrl, channelId, threadTs } = parseSlashCommand(rawBody);
+  // Emberloom fork 21/11 (Tyra LOW): slash commands, among them /clip acp spawn, run only for trusted users.
+  const commandUser = new URLSearchParams(rawBody).get("user_id");
+  if (!isTrustedUserId(commandUser)) {
+    ctx.logger.info("Slash command from a user who is not trusted ignored", {});
+    return;
+  }
   const parts = text.trim().split(/\s+/);
   const subcommand = parts[0]?.toLowerCase() ?? "";
   const arg = parts[1]?.toLowerCase() ?? "";
@@ -2229,8 +2235,14 @@ const plugin = definePlugin({
       if (!ensureRuntime(event.companyId)) return;
       const p = event.payload as Record<string, unknown>;
       const escalationId = String(p.escalationId ?? "");
-      const replyText = String(p.text ?? "");
       const userId = String(p.userId ?? "unknown");
+      // Emberloom fork 21/11 (Tyra LOW): only a trusted user's reply reaches the agent, and it is cleaned like
+      // every other Slack text.
+      if (!isTrustedUserId(userId)) {
+        ctx.logger.info("Escalation reply from a user who is not trusted ignored", {});
+        return;
+      }
+      const replyText = rensa({ text: p.text }, false).text;
       if (!escalationId || !replyText) return;
 
       const record = await ctx.state.get({
@@ -2273,19 +2285,8 @@ const plugin = definePlugin({
       await ctx.metrics.write("slack.escalations.resolved", 1, { action: "human_reply" });
     });
 
-    // Thread message routing (multi-agent + custom commands + media)
-    ctx.events.on(`plugin.${PLUGIN_ID}.slack.thread_message`, async (event: PluginEvent) => {
-      const rt = ensureRuntime(event.companyId);
-      if (!rt) return;
-      const p = event.payload as Record<string, unknown>;
-      await handleThreadMessage(event.companyId, {
-        channel: String(p.channel ?? ""),
-        threadTs: String(p.threadTs ?? ""),
-        text: String(p.text ?? ""),
-        replyToMessageTs: p.replyToMessageTs != null ? String(p.replyToMessageTs) : undefined,
-        files: Array.isArray(p.files) ? p.files as Array<Record<string, unknown>> : [],
-      });
-    });
+    // Emberloom fork 21/11 (Tyra LOW): the unused slack.thread_message listener is removed; it routed text without
+    // the cleaner. Slack text reaches agents only through the event path, which cleans it.
 
     // Collect events for watch checking (Phase 5)
     const watchableEvents: Array<"issue.created" | "issue.updated" | "agent.run.failed" | "agent.run.finished" | "agent.status_changed" | "cost_event.created" | "approval.created"> = [
