@@ -1468,7 +1468,9 @@ const plugin = definePlugin({
         const text = typeof p.text === "string" ? p.text.trim() : "";
         if (!text) return { error: "text is required" };
         if (text.length > 3000) return { error: "text is longer than 3000 characters" };
-        if (/<!(channel|here|everyone|subteam\^)|<@[A-Z0-9]+>/i.test(text)) {
+        // Every Slack special mention starts with <@ or <! (also the labelled forms <@U1|name>, <!here|here>,
+        // <!subteam^S1|@group>), so all of them are refused (Tyra 21/11).
+        if (/<[@!]/.test(text)) {
           return { error: "Mentions and @channel, @here or @everyone are not allowed in a report" };
         }
         const channelId = rt.config.defaultChannelId;

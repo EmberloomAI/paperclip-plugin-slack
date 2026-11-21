@@ -203,7 +203,8 @@ describe("post_report", () => {
     },
   );
 
-  it.each([["<!channel> alla"], ["<!here>"], ["<!everyone>"], ["hej <@U0AU87LMNUC>"], ["<!subteam^S123>"]])(
+  it.each([["<!channel> alla"], ["<!here>"], ["<!everyone>"], ["hej <@U0AU87LMNUC>"], ["<!subteam^S123>"],
+    ["hej <@U0123ABC|stefan>"], ["<!here|here>"], ["<!subteam^S1|@grupp>"], ["<@W0123>"], ["<!date^1392734382^{date}|x>"]])(
     "rejects mentions: %s",
     async (text) => {
       const { ctx } = await setup();
